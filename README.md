@@ -1,0 +1,1 @@
+# nse-ai-paper-trader
