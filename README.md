@@ -1,14 +1,47 @@
-# NSE Cash Equity Paper Trading Simulator
+# NSE AI Paper Trader
 
-Beginner-friendly intraday paper-trading simulator for NSE cash equities with strict risk controls.
+Beginner-friendly NSE cash-equity paper-trading dashboard with news scanning, sentiment labels, strategy scoring, and strict fake-money risk controls.
 
-This project never places real orders. It uses a market-data provider interface, simulated market data by default, a paper execution engine, strategy engine, risk manager, portfolio tracker, SQLite trade logger, and Streamlit dashboard.
+This project never places real orders. It uses fake capital only.
+
+## Version 1.1 Features
+
+- Live auto-refresh watchlist table
+- NSE corporate announcements scanner with safe fallback data
+- News sentiment classifier: positive, negative, neutral, ignore
+- Auto-generated watchlist from companies mentioned in announcements
+- Strategy scoring engine:
+  - news catalyst breakout
+  - volume spike
+  - VWAP trend
+  - previous day high breakout
+  - opening range breakout
+- Paper trading only
+- No real orders
+- Yahoo/mock quote fallback when a live feed is not connected
+
+The dashboard shows:
+
+- stock
+- latest news
+- sentiment
+- LTP
+- trigger price
+- stop loss
+- target
+- signal
+- confidence score
+- reason for trade
+- previous close
+- change %
+- quote source
+- quote status
 
 ## Risk Rules
 
 - Fake capital: Rs. 1,00,000
 - Daily profit target: Rs. 2,500
-- Stop trading after daily profit reaches Rs. 2,500A
+- Stop trading after daily profit reaches Rs. 2,500
 - Max daily loss: Rs. 1,200
 - Stop trading if daily loss reaches Rs. 1,200
 - Stop loss per trade: 0.2% to 0.5%
@@ -32,11 +65,28 @@ This project never places real orders. It uses a market-data provider interface,
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python scripts/run_simulation.py
 streamlit run dashboard.py --server.fileWatcherType none
 ```
 
-The simulator writes all signals, rejected trades, fake executions, stop losses, targets, square-offs, and end-of-day P&L to `data/paper_trading.db`.
+On Streamlit Cloud, set:
+
+```text
+Main file path: dashboard.py
+```
+
+The app can run directly as a dashboard. The demo paper session writes fake trades, signals, rejected trades, stop losses, targets, square-offs, and end-of-day P&L to `data/paper_trading.db`.
+
+## Beginner Notes
+
+The dashboard has two different parts:
+
+1. **V1.1 scanner and scoring table**  
+   This scans announcements, classifies sentiment, fetches fallback quotes, and scores possible setups.
+
+2. **Demo paper session**  
+   This runs a simulated paper session. It is not live trading.
+
+For true live tick data, use a broker/data feed such as Kite, but the app still stays paper-only unless real order code is deliberately added.
 
 ## Monday Live Monitoring Setup
 
@@ -88,6 +138,7 @@ This mode uses Zerodha Kite only for live market data. It does not place real or
 Set Kite credentials for the current terminal:
 
 ```bash
+pip install -r requirements-kite.txt
 export KITE_API_KEY="your_api_key"
 export KITE_ACCESS_TOKEN="your_access_token"
 ```
