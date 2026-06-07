@@ -8,7 +8,7 @@ This project never places real orders. It uses a market-data provider interface,
 
 - Fake capital: Rs. 1,00,000
 - Daily profit target: Rs. 2,500
-- Stop trading after daily profit reaches Rs. 2,500
+- Stop trading after daily profit reaches Rs. 2,500A
 - Max daily loss: Rs. 1,200
 - Stop trading if daily loss reaches Rs. 1,200
 - Stop loss per trade: 0.2% to 0.5%
