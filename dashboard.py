@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 import sqlite3
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -11,11 +12,13 @@ from paper_trading_simulator.config import TradingConfig
 from paper_trading_simulator.engine import IntradaySimulator
 from paper_trading_simulator.logger import SQLiteTradeLogger
 from paper_trading_simulator.market_data import (
+    HistoricalYahooNSEMarketDataProvider,
     SimulatedNSEMarketDataProvider,
     YahooNSELiveQuoteMarketDataProvider,
     default_symbols,
     mock_latest_candle,
 )
+from paper_trading_simulator.live_paper import LivePaperTrader
 from paper_trading_simulator.scoring import score_trade_setup
 from paper_trading_simulator.sentiment import classify_sentiment
 
@@ -24,6 +27,7 @@ st.set_page_config(page_title="NSE AI Paper Trader", layout="wide")
 
 config = TradingConfig()
 db_path = Path(config.database_path)
+paper_trader = LivePaperTrader(config)
 
 
 def quote_status(timestamp, volume: int | float | None, source: str) -> str:
@@ -47,13 +51,29 @@ def price_change(candle) -> tuple[float | None, float | None]:
     return change, change_pct
 
 
-@st.cache_data(ttl=300)
+def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) -> tuple[str, str]:
+    if not is_auto_added:
+        return "REJECT", "Only NSE announcement stocks that pass the price filter can be auto-traded"
+    if score.sentiment != "positive":
+        return "REJECT", "Announcement is not positive enough for intraday auto-trading"
+    if quote_source.startswith("Mock"):
+        return "REJECT", "Live quote is not trusted"
+    if not candle or candle.close <= 0:
+        return "REJECT", "No usable LTP"
+    if score.confidence_score < 75:
+        return "WAIT", "Positive news exists, but strategy confidence is below 75"
+    if candle.close < score.trigger_price:
+        return "WAIT_FOR_TRIGGER", f"Wait for breakout confirmation near Rs. {score.trigger_price:.2f}"
+    return "TRADE_READY", "Positive NSE announcement, trusted quote, price filter passed, confidence strong, trigger reached"
+
+
+@st.cache_data(ttl=60)
 def load_announcements(days: int, limit: int):
     scanner = NSECorporateAnnouncementsScanner()
     return scanner.fetch_recent(days=days, limit=limit)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=10)
 def load_latest_quotes(symbols: tuple[str, ...]):
     provider = YahooNSELiveQuoteMarketDataProvider(poll_seconds=60)
     quotes = {}
@@ -76,6 +96,195 @@ def load_latest_quotes(symbols: tuple[str, ...]):
                 "source": "Mock fallback - not live",
             }
     return quotes
+
+
+def reset_live_paper_state() -> None:
+    st.session_state.live_paper_state = paper_trader.create_state()
+
+
+def previous_weekday(start_day: date) -> date:
+    day = start_day
+    while day.weekday() >= 5:
+        day = day - timedelta(days=1)
+    return day
+
+
+def format_money(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return f"Rs. {float(value):,.2f}"
+
+
+def format_plain_number(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return f"{float(value):,.2f}"
+
+
+def change_color(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    value = float(value)
+    if value > 0:
+        return "color: #047857; font-weight: 700; background-color: #ecfdf3"
+    if value < 0:
+        return "color: #b91c1c; font-weight: 700; background-color: #fff1f2"
+    return "color: #374151"
+
+
+def signal_color(value: str) -> str:
+    if value == "BUY WATCH":
+        return "color: #047857; font-weight: 800; background-color: #dcfce7"
+    if value in {"IGNORE", "NO TRADE"}:
+        return "color: #991b1b; font-weight: 700; background-color: #fee2e2"
+    return "color: #92400e; font-weight: 700; background-color: #fef3c7"
+
+
+def decision_color(value: str) -> str:
+    if value == "TRADE_READY":
+        return "color: #047857; font-weight: 800; background-color: #dcfce7"
+    if value == "WAIT_FOR_TRIGGER":
+        return "color: #1d4ed8; font-weight: 800; background-color: #dbeafe"
+    if value == "WAIT":
+        return "color: #92400e; font-weight: 700; background-color: #fef3c7"
+    return "color: #991b1b; font-weight: 700; background-color: #fee2e2"
+
+
+def pnl_color(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return change_color(value)
+
+
+def yes_no_color(value: str) -> str:
+    if value == "YES":
+        return "color: #047857; font-weight: 800; background-color: #dcfce7"
+    return "color: #991b1b; font-weight: 700; background-color: #fee2e2"
+
+
+def style_watchlist(frame: pd.DataFrame):
+    if frame.empty:
+        return frame
+    return (
+        frame.style.map(change_color, subset=["change", "change %"])
+        .format(
+            {
+                "LTP": format_money,
+                "previous close": format_money,
+                "change": format_plain_number,
+                "change %": lambda value: "" if pd.isna(value) else f"{float(value):.2f}%",
+                "day high": format_money,
+                "day low": format_money,
+                "volume": lambda value: "" if pd.isna(value) else f"{int(value):,}",
+            }
+        )
+        .hide(axis="index")
+    )
+
+
+def style_announcement_feed(frame: pd.DataFrame):
+    if frame.empty:
+        return frame
+    return (
+        frame.style.map(yes_no_color, subset=["auto-added"])
+        .map(change_color, subset=["change %"])
+        .format(
+            {
+                "LTP": format_money,
+                "change %": lambda value: "" if pd.isna(value) else f"{float(value):.2f}%",
+            }
+        )
+        .hide(axis="index")
+    )
+
+
+def style_scores(frame: pd.DataFrame):
+    if frame.empty:
+        return frame
+    return (
+        frame.style.map(change_color, subset=["change %"])
+        .map(signal_color, subset=["signal"])
+        .map(decision_color, subset=["AI decision"])
+        .format(
+            {
+                "LTP": format_money,
+                "previous close": format_money,
+                "change %": lambda value: "" if pd.isna(value) else f"{float(value):.2f}%",
+                "trigger price": format_money,
+                "stop loss": format_money,
+                "target": format_money,
+                "confidence score": lambda value: f"{int(value)}",
+            }
+        )
+        .hide(axis="index")
+    )
+
+
+def positions_frame(state) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "stock": position.symbol,
+                "qty": position.quantity,
+                "entry": position.entry_price,
+                "LTP": position.latest_price,
+                "stop loss": position.stop_loss,
+                "target": position.target,
+                "unrealized P&L": position.unrealized_pnl,
+                "confidence": position.confidence_score,
+                "why entered": position.reason,
+                "entry time": position.entry_time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            for position in state.positions.values()
+        ]
+    )
+
+
+def trades_frame(state) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "stock": trade.symbol,
+                "qty": trade.quantity,
+                "entry": trade.entry_price,
+                "exit": trade.exit_price,
+                "exit reason": trade.exit_reason,
+                "P&L": trade.pnl,
+                "why entered": trade.reason,
+                "entry time": trade.entry_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "exit time": trade.exit_time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            for trade in state.closed_trades
+        ]
+    )
+
+
+def style_positions(frame: pd.DataFrame):
+    if frame.empty:
+        return frame
+    return (
+        frame.style.map(pnl_color, subset=["unrealized P&L"])
+        .format(
+            {
+                "entry": format_money,
+                "LTP": format_money,
+                "stop loss": format_money,
+                "target": format_money,
+                "unrealized P&L": format_money,
+            }
+        )
+        .hide(axis="index")
+    )
+
+
+def style_trades(frame: pd.DataFrame):
+    if frame.empty:
+        return frame
+    return (
+        frame.style.map(pnl_color, subset=["P&L"])
+        .format({"entry": format_money, "exit": format_money, "P&L": format_money})
+        .hide(axis="index")
+    )
 
 
 def read_table(table_name: str) -> pd.DataFrame:
@@ -109,21 +318,76 @@ if auto_refresh:
 st.sidebar.markdown("### Watchlist Settings")
 announcement_days = st.sidebar.slider("Announcement lookback days", min_value=1, max_value=10, value=3)
 max_announcements = st.sidebar.slider("Max announcements", min_value=5, max_value=50, value=20, step=5)
+price_filter_min = st.sidebar.number_input("Auto-add minimum LTP", min_value=1, max_value=5000, value=200, step=25)
+price_filter_max = st.sidebar.number_input("Auto-add maximum LTP", min_value=1, max_value=10000, value=1000, step=25)
 manual_symbols_text = st.sidebar.text_area(
     "Manual symbols",
     value="RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK",
     help="Comma-separated NSE symbols.",
 )
 
+st.sidebar.markdown("### Live Paper Trading")
+auto_paper_trade = st.sidebar.toggle(
+    "Enable fake auto-trading",
+    value=False,
+    help="Paper trading only. The app never sends broker orders.",
+)
+if st.sidebar.button("Reset fake trading day"):
+    reset_live_paper_state()
+
+if "live_paper_state" not in st.session_state:
+    reset_live_paper_state()
+
 st.info(
     "This is the auto-refresh watchlist. It reloads announcements and quote sources. "
     "When the market is closed, rows show last-session data. If a source is blocked, rows are marked as mock fallback."
 )
 
+if price_filter_min > price_filter_max:
+    st.error("Auto-add minimum LTP must be lower than maximum LTP.")
+    st.stop()
+
 announcements = load_announcements(announcement_days, max_announcements)
 announcement_symbols = symbols_from_announcements(announcements)
 manual_symbols = [item.strip().upper() for item in manual_symbols_text.split(",") if item.strip()]
-watchlist_symbols = list(dict.fromkeys(announcement_symbols + manual_symbols))
+announcement_quotes = load_latest_quotes(tuple(announcement_symbols))
+
+announcement_feed_rows = []
+auto_added_symbols = []
+for announcement in announcements:
+    quote = announcement_quotes.get(announcement.symbol)
+    candle = quote["candle"] if quote else None
+    quote_source = quote["source"] if quote else "No quote"
+    change, change_pct = price_change(candle)
+    sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
+    has_trusted_price = candle is not None and not quote_source.startswith("Mock")
+    price_is_in_range = bool(candle and price_filter_min <= candle.close <= price_filter_max)
+    auto_added = has_trusted_price and price_is_in_range
+    if auto_added and announcement.symbol not in auto_added_symbols:
+        auto_added_symbols.append(announcement.symbol)
+    if not has_trusted_price:
+        filter_reason = "Not auto-added: live quote unavailable"
+    elif not price_is_in_range:
+        filter_reason = f"Not auto-added: LTP outside Rs. {price_filter_min}-{price_filter_max}"
+    else:
+        filter_reason = "Auto-added from NSE announcement"
+    announcement_feed_rows.append(
+        {
+            "time": announcement.published_at,
+            "stock": announcement.symbol,
+            "company": announcement.company,
+            "latest NSE announcement": announcement.headline,
+            "sentiment": sentiment.label,
+            "LTP": candle.close if candle else None,
+            "change %": change_pct,
+            "auto-added": "YES" if auto_added else "NO",
+            "reason": filter_reason,
+            "quote status": quote_status(candle.timestamp, candle.volume, quote_source) if candle else "No quote",
+            "source": announcement.source,
+        }
+    )
+
+watchlist_symbols = list(dict.fromkeys(auto_added_symbols + manual_symbols))
 quotes = load_latest_quotes(tuple(watchlist_symbols))
 
 score_rows = []
@@ -134,11 +398,15 @@ for announcement in announcements:
     quote_source = quote["source"] if quote else "No quote"
     score = score_trade_setup(announcement, sentiment, candle, config.target_reward_multiple)
     change, change_pct = price_change(candle)
+    is_auto_added = announcement.symbol in auto_added_symbols
+    ai_decision, ai_reason = ai_intraday_decision(score, candle, quote_source, is_auto_added)
     score_rows.append(
         {
             "stock": score.symbol,
             "latest news": score.latest_news,
             "sentiment": score.sentiment,
+            "announcement eligible": "YES" if is_auto_added else "NO",
+            "AI decision": ai_decision,
             "LTP": score.ltp,
             "previous close": candle.previous_close if candle else None,
             "change %": change_pct,
@@ -147,7 +415,7 @@ for announcement in announcements:
             "target": score.target,
             "signal": score.signal,
             "confidence score": score.confidence_score,
-            "reason for trade": score.reason_for_trade,
+            "reason for trade": f"{ai_reason}; {score.reason_for_trade}",
             "quote status": quote_status(candle.timestamp, candle.volume, quote_source) if candle else "No quote",
             "quote source": quote_source,
             "news source": score.source,
@@ -178,18 +446,155 @@ for symbol in watchlist_symbols:
         }
     )
 
-top_left, top_right = st.columns(2)
+watchlist_df = pd.DataFrame(watchlist_rows)
+score_df = pd.DataFrame(score_rows)
+
+ist_now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+if auto_paper_trade:
+    st.session_state.live_paper_state = paper_trader.process_setups(
+        st.session_state.live_paper_state,
+        score_rows,
+        ist_now,
+    )
+
+live_state = st.session_state.live_paper_state
+
+top_left, top_middle, top_right = st.columns(3)
 with top_left:
     st.metric("Watchlist stocks", len(watchlist_rows))
+with top_middle:
+    st.metric("Fake total P&L", f"Rs. {live_state.total_pnl():,.2f}")
 with top_right:
     buy_watch_count = sum(1 for row in score_rows if row["signal"] == "BUY WATCH")
     st.metric("BUY WATCH signals", buy_watch_count)
 
+st.subheader("Live NSE Corporate Announcement Feed")
+st.caption(
+    f"Auto-refreshes every 60 seconds. Announcement stocks are auto-added only when trusted LTP is between "
+    f"Rs. {price_filter_min} and Rs. {price_filter_max}. Manual symbols stay in your watchlist separately."
+)
+announcement_feed_df = pd.DataFrame(announcement_feed_rows)
+feed_col_1, feed_col_2, feed_col_3 = st.columns(3)
+feed_col_1.metric("Announcements scanned", len(announcement_feed_rows))
+feed_col_2.metric("Auto-added stocks", len(auto_added_symbols))
+feed_col_3.metric("Price filter", f"Rs. {price_filter_min}-{price_filter_max}")
+st.dataframe(style_announcement_feed(announcement_feed_df), use_container_width=True)
+
 st.subheader("Live Auto-Refresh Watchlist")
-st.dataframe(pd.DataFrame(watchlist_rows), use_container_width=True, hide_index=True)
+st.dataframe(style_watchlist(watchlist_df), use_container_width=True)
 
 st.subheader("AI Strategy Scoring")
-st.dataframe(pd.DataFrame(score_rows), use_container_width=True, hide_index=True)
+st.caption(
+    "Auto paper-trading is restricted to TRADE_READY rows only. These must be positive NSE announcement stocks, "
+    "auto-added by the Rs. 200-Rs. 1,000 filter, with trusted quotes and trigger confirmation."
+)
+st.dataframe(style_scores(score_df), use_container_width=True)
+
+st.subheader("Live Paper Trading Engine")
+if auto_paper_trade:
+    st.success("Fake auto-trading is ON. It only creates paper trades inside this dashboard.")
+else:
+    st.warning("Fake auto-trading is OFF. Turn it on from the sidebar before Monday's 9:15 AM session.")
+
+status_text = live_state.stopped_reason or "Armed for market hours"
+paper_cols = st.columns(5)
+paper_cols[0].metric("Fake capital", "Rs. 1,00,000")
+paper_cols[1].metric("Fake cash", f"Rs. {live_state.cash:,.2f}")
+paper_cols[2].metric("Realized P&L", f"Rs. {live_state.realized_pnl():,.2f}")
+paper_cols[3].metric("Unrealized P&L", f"Rs. {live_state.unrealized_pnl():,.2f}")
+paper_cols[4].metric("Trades used", f"{live_state.trades_taken}/5")
+st.caption(
+    f"Status: {status_text}. Trading window: 9:15 AM to 3:30 PM IST. "
+    "Force square-off: 3:20 PM IST. Daily target: Rs. 2,500. Max daily loss: Rs. 1,200."
+)
+
+position_df = positions_frame(live_state)
+trade_df = trades_frame(live_state)
+event_df = pd.DataFrame(live_state.event_log)
+
+st.markdown("#### Open Fake Positions")
+st.dataframe(style_positions(position_df), use_container_width=True)
+
+st.markdown("#### Closed Fake Trades")
+st.dataframe(style_trades(trade_df), use_container_width=True)
+
+st.markdown("#### Fake Execution Log")
+st.dataframe(event_df, use_container_width=True, hide_index=True)
+
+with st.expander("Backtest with actual historical NSE prices", expanded=True):
+    st.info(
+        "Use this to replay real historical intraday candles through the same paper-trading rules. "
+        "Yahoo usually provides 1-minute NSE data only for recent days. Weekends and holidays will show no candles."
+    )
+    backtest_left, backtest_right = st.columns([1, 2])
+    with backtest_left:
+        backtest_symbol_options = list(dict.fromkeys(default_symbols() + watchlist_symbols))
+        backtest_defaults = [symbol for symbol in ["INFY", "RELIANCE", "TCS"] if symbol in backtest_symbol_options]
+        backtest_symbols = st.multiselect(
+            "Backtest stocks",
+            backtest_symbol_options,
+            default=backtest_defaults,
+            key="historical_backtest_symbols",
+        )
+        backtest_day = st.date_input(
+            "Backtest trading day",
+            value=previous_weekday(date.today()),
+            key="historical_backtest_day",
+        )
+        reset_backtest_logs = st.checkbox("Clear old logs before backtest", value=True, key="reset_backtest_logs")
+        run_backtest = st.button("Run actual-price backtest", type="primary")
+    with backtest_right:
+        st.metric("Fake capital", "Rs. 1,00,000")
+        st.metric("Data source", "Yahoo NSE historical 1-minute candles")
+        st.caption(
+            "Example: June 6, 2026 is Saturday, so it has no NSE cash-equity candles. "
+            "Use Friday, June 5, 2026 for the nearest trading day."
+        )
+
+    if run_backtest:
+        if not backtest_symbols:
+            st.warning("Choose at least one stock for the backtest.")
+        elif pd.Timestamp(backtest_day).weekday() >= 5:
+            st.error(f"{backtest_day.strftime('%B %d, %Y')} is a weekend. NSE cash equity was closed.")
+        else:
+            logger = SQLiteTradeLogger(config.database_path)
+            if reset_backtest_logs:
+                logger.reset()
+            provider = HistoricalYahooNSEMarketDataProvider()
+            simulator = IntradaySimulator(config, provider, logger)
+            try:
+                summary = simulator.run(backtest_symbols, backtest_day)
+                st.success(
+                    f"Actual-price backtest complete for {backtest_day.isoformat()}. "
+                    f"End-of-day fake P&L: Rs. {summary['total_pnl']:.2f}"
+                )
+            except Exception as exc:
+                st.error(str(exc))
+
+    backtest_events = read_table("events")
+    backtest_trades = read_table("trades")
+    backtest_positions = read_table("open_positions")
+    backtest_snapshots = read_table("portfolio_snapshots")
+
+    st.markdown("#### Backtest Trades")
+    if not backtest_trades.empty:
+        shown_trades = backtest_trades.copy()
+        shown_trades["price_source"] = "Yahoo NSE historical candles"
+        st.dataframe(shown_trades, use_container_width=True, hide_index=True)
+        pnl_chart = shown_trades.sort_values("id").copy()
+        pnl_chart["cumulative_pnl"] = pnl_chart["pnl"].cumsum()
+        st.line_chart(pnl_chart, x="id", y="cumulative_pnl")
+    else:
+        st.dataframe(backtest_trades, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Backtest Open Positions")
+    st.dataframe(backtest_positions, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Backtest Portfolio Snapshots")
+    st.dataframe(backtest_snapshots.head(30), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Backtest Signal And Execution Log")
+    st.dataframe(backtest_events, use_container_width=True, hide_index=True)
 
 with st.expander("Optional: synthetic demo paper session", expanded=False):
     st.warning("This demo uses synthetic prices for testing only. It is not live NSE data.")

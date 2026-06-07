@@ -7,7 +7,11 @@ This project never places real orders. It uses fake capital only.
 ## Version 1.1 Features
 
 - Live auto-refresh watchlist table
+- Green/red Moneycontrol-style price movement coloring
 - NSE corporate announcements scanner with safe fallback data
+- Separate live NSE corporate announcement feed
+- Announcement feed refreshes every 60 seconds
+- Auto-adds announcement stocks to the watchlist only when LTP is between Rs. 200 and Rs. 1,000 by default
 - News sentiment classifier: positive, negative, neutral, ignore
 - Auto-generated watchlist from companies mentioned in announcements
 - Strategy scoring engine:
@@ -19,11 +23,18 @@ This project never places real orders. It uses fake capital only.
 - Paper trading only
 - No real orders
 - Yahoo/mock quote fallback when a live feed is not connected
+- Optional live fake auto-trading engine while the dashboard is open
+- Historical actual-price backtest using recent Yahoo NSE 1-minute candles
+- Auto-trading restricted to eligible NSE announcement stocks only
+- Wait-for-trigger entry logic so the app does not buy immediately on a headline
+- Early-exit target logic so the app aims to exit before stretched targets
 
 The dashboard shows:
 
 - stock
+- company
 - latest news
+- live NSE announcement feed
 - sentiment
 - LTP
 - trigger price
@@ -32,10 +43,16 @@ The dashboard shows:
 - signal
 - confidence score
 - reason for trade
+- announcement eligible
+- AI decision: TRADE_READY, WAIT_FOR_TRIGGER, WAIT, or REJECT
 - previous close
 - change %
 - quote source
 - quote status
+- open fake positions
+- realized and unrealized paper P&L
+- fake execution reason and event log
+- backtest trades using actual historical intraday candles when available
 
 ## Risk Rules
 
@@ -80,13 +97,77 @@ The app can run directly as a dashboard. The demo paper session writes fake trad
 
 The dashboard has two different parts:
 
-1. **V1.1 scanner and scoring table**  
-   This scans announcements, classifies sentiment, fetches fallback quotes, and scores possible setups.
+1. **Live NSE corporate announcement feed**  
+   This checks recent NSE corporate announcements every minute. If a stock has a trusted quote and its LTP is between the selected price range, it is automatically added to the watchlist.
 
-2. **Demo paper session**  
-   This runs a simulated paper session. It is not live trading.
+2. **Live watchlist and scoring table**  
+   This scans announcements, classifies sentiment, fetches quotes, colors up/down moves, and scores possible setups.
 
-For true live tick data, use a broker/data feed such as Kite, but the app still stays paper-only unless real order code is deliberately added.
+3. **Live paper trading engine**  
+   This can create fake buy trades only inside the dashboard when you turn on `Enable fake auto-trading`. It only trades NSE announcement stocks marked `TRADE_READY`. It never sends real broker orders.
+
+4. **Synthetic demo paper session**  
+   This is only for testing the old simulator with fake generated prices. It is not live NSE data.
+
+5. **Historical actual-price backtest**  
+   This replays recent Yahoo NSE 1-minute candles through the same strategy, risk, stop-loss, target, and square-off rules.
+
+For true live tick data, use a broker/data feed such as Kite. The app still stays paper-only unless real order code is deliberately added.
+
+## Actual Historical Backtesting
+
+Use the `Backtest with actual historical NSE prices` section in the dashboard.
+
+Steps:
+
+1. Choose the stocks.
+2. Choose a real NSE trading day.
+3. Click `Run actual-price backtest`.
+4. Read:
+   - Backtest Trades
+   - Backtest Open Positions
+   - Backtest Portfolio Snapshots
+   - Backtest Signal And Execution Log
+
+Important date example: **June 6, 2026 is a Saturday**, so NSE cash equity was closed. Use **June 5, 2026** for the nearest trading session.
+
+Yahoo usually provides 1-minute candles only for recent days. If the date is too old, a weekend, a holiday, or Yahoo blocks the request, the dashboard will tell you that no candles were found.
+
+## Monday 9:15 AM Paper Trading Checklist
+
+1. Open the deployed Streamlit app before 9:15 AM IST.
+2. Keep `Auto-refresh watchlist` turned on.
+3. Set refresh seconds to 5 or 10.
+4. Check the quote status column.
+   - `Updating` means the app is receiving current-session data.
+   - `Market closed / last session` means it is still showing old data.
+   - `Mock fallback - not live` means the source is blocked and the row is not trusted for auto paper entries.
+5. Turn on `Enable fake auto-trading` in the sidebar only when you are ready to paper trade.
+6. Keep the browser tab open during the session.
+7. Watch:
+   - Open Fake Positions
+   - Closed Fake Trades
+   - Fake Execution Log
+   - Fake total P&L
+
+The paper trading engine uses Rs. 1,00,000 fake cash, max 5 trades, max 2 open positions, max Rs. 400 planned loss per trade, Rs. 2,500 daily target, Rs. 1,200 daily loss limit, and force square-off at 3:20 PM IST.
+
+## AI Intraday Decision Rules
+
+The fake auto-trader can only enter a trade when all of these are true:
+
+- The stock came from the NSE corporate announcement feed.
+- The stock passed the auto-add price filter, Rs. 200 to Rs. 1,000 by default.
+- The announcement sentiment is positive.
+- The quote source is trusted, not mock fallback.
+- The strategy confidence score is at least 75.
+- The price has reached the trigger price.
+
+The app waits for a higher trigger instead of entering immediately. Example: if a stock is near Rs. 250, the system may wait around Rs. 252 before fake entry if the score is strong enough.
+
+Targets are intentionally early. If a move looks stretched toward Rs. 273 to Rs. 275, the app tries to plan an earlier paper exit instead of waiting for the full stretched move.
+
+Important: Streamlit Cloud runs this fake execution while the dashboard session is alive. For a stronger always-on setup, run the Kite live paper session locally or on a VPS and keep the dashboard open for monitoring.
 
 ## Monday Live Monitoring Setup
 
