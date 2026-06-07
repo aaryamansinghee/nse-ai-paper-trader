@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 import sqlite3
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -73,7 +74,29 @@ def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) 
 @st.cache_data(ttl=60)
 def load_announcement_result(days: int, limit: int):
     scanner = NSECorporateAnnouncementsScanner()
-    return scanner.fetch_recent_with_status(days=days, limit=limit)
+    fetched_at = datetime.now().replace(microsecond=0)
+    if hasattr(scanner, "fetch_recent_with_status"):
+        return scanner.fetch_recent_with_status(days=days, limit=limit)
+    try:
+        announcements = scanner.fetch_recent(days=days, limit=limit)
+        return SimpleNamespace(
+            announcements=announcements,
+            ok=True,
+            message=(
+                "Fetched announcements using legacy scanner. Upload the latest "
+                "paper_trading_simulator/announcements.py for full connection health checks."
+            ),
+            fetched_at=fetched_at,
+            source_url="https://www.nseindia.com/companies-listing/corporate-filings-announcements",
+        )
+    except Exception as exc:
+        return SimpleNamespace(
+            announcements=[],
+            ok=False,
+            message=f"NSE announcement fetch failed: {type(exc).__name__}: {exc}",
+            fetched_at=fetched_at,
+            source_url="https://www.nseindia.com/companies-listing/corporate-filings-announcements",
+        )
 
 
 @st.cache_data(ttl=10)
