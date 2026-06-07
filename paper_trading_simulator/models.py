@@ -25,6 +25,7 @@ class Candle:
     low: float
     close: float
     volume: int
+    previous_close: float | None = None
 
 
 @dataclass(frozen=True)
@@ -83,4 +84,3 @@ class RiskDecision:
     stop_loss_price: Optional[float] = None
     target_price: Optional[float] = None
     reason: str = ""
-

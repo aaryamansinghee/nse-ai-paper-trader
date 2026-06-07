@@ -5,6 +5,7 @@ from pathlib import Path
 from queue import Empty, Queue
 import time as clock
 from typing import Callable, Iterable, Iterator, Sequence
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,7 @@ class SimulatedNSEMarketDataProvider(LiveMarketDataProvider):
                 low=float(row.low),
                 close=float(row.close),
                 volume=int(row.volume),
+                previous_close=None,
             )
 
     def _generate_symbol_day(self, symbol: str, trading_day: date) -> pd.DataFrame:
@@ -99,6 +101,7 @@ class CSVMarketDataProvider(LiveMarketDataProvider):
                 low=float(row.low),
                 close=float(row.close),
                 volume=int(row.volume),
+                previous_close=None,
             )
 
 
@@ -153,6 +156,7 @@ class StreamingCSVMarketDataProvider(LiveMarketDataProvider):
                     low=float(row.low),
                     close=float(row.close),
                     volume=int(row.volume),
+                    previous_close=None,
                 )
             clock.sleep(self.poll_seconds)
 
@@ -232,6 +236,7 @@ class NSELiveQuoteMarketDataProvider(LiveMarketDataProvider):
             low=round(min(previous_price, last_price), 2),
             close=round(last_price, 2),
             volume=minute_volume,
+            previous_close=None,
         )
 
     def _warm_session(self, force: bool = False) -> None:
@@ -287,7 +292,7 @@ class YahooNSELiveQuoteMarketDataProvider(LiveMarketDataProvider):
         volumes = quote.get("volume") or []
         candles: list[Candle] = []
         for index, raw_timestamp in enumerate(timestamps):
-            timestamp = datetime.fromtimestamp(raw_timestamp).replace(second=0, microsecond=0)
+            timestamp = datetime.fromtimestamp(raw_timestamp, ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0, tzinfo=None)
             if timestamp.date() != trading_day:
                 continue
             key = (symbol, timestamp)
@@ -322,6 +327,7 @@ class YahooNSELiveQuoteMarketDataProvider(LiveMarketDataProvider):
         if not result:
             return None
         data = result[0]
+        meta = data.get("meta", {})
         timestamps = data.get("timestamp") or []
         quote = (data.get("indicators", {}).get("quote") or [{}])[0]
         opens = quote.get("open") or []
@@ -329,11 +335,36 @@ class YahooNSELiveQuoteMarketDataProvider(LiveMarketDataProvider):
         lows = quote.get("low") or []
         closes = quote.get("close") or []
         volumes = quote.get("volume") or []
+
+        regular_price = meta.get("regularMarketPrice")
+        regular_time = meta.get("regularMarketTime")
+        day_high = meta.get("regularMarketDayHigh")
+        day_low = meta.get("regularMarketDayLow")
+        day_volume = meta.get("regularMarketVolume")
+        previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+        if regular_price is not None and regular_time is not None:
+            timestamp = datetime.fromtimestamp(regular_time, ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0, tzinfo=None)
+            latest_open = None
+            for index, value in enumerate(opens):
+                if value is not None:
+                    latest_open = value
+                    break
+            return Candle(
+                timestamp=timestamp,
+                symbol=symbol.upper(),
+                open=round(float(latest_open or regular_price), 2),
+                high=round(float(day_high or regular_price), 2),
+                low=round(float(day_low or regular_price), 2),
+                close=round(float(regular_price), 2),
+                volume=int(day_volume or 0),
+                previous_close=round(float(previous_close), 2) if previous_close is not None else None,
+            )
+
         for index in range(len(timestamps) - 1, -1, -1):
             values = [opens[index], highs[index], lows[index], closes[index]]
             if any(value is None for value in values):
                 continue
-            timestamp = datetime.fromtimestamp(timestamps[index]).replace(second=0, microsecond=0)
+            timestamp = datetime.fromtimestamp(timestamps[index], ZoneInfo("Asia/Kolkata")).replace(second=0, microsecond=0, tzinfo=None)
             return Candle(
                 timestamp=timestamp,
                 symbol=symbol.upper(),
@@ -342,6 +373,7 @@ class YahooNSELiveQuoteMarketDataProvider(LiveMarketDataProvider):
                 low=round(float(lows[index]), 2),
                 close=round(float(closes[index]), 2),
                 volume=int(volumes[index] or 0),
+                previous_close=None,
             )
         return None
 
@@ -420,7 +452,7 @@ class KiteLiveMarketDataProvider(LiveMarketDataProvider):
         try:
             from kiteconnect import KiteTicker
         except ImportError as exc:
-            raise RuntimeError("Install kiteconnect with `pip install -r requirements.txt`.") from exc
+            raise RuntimeError("Install Kite support with `pip install -r requirements-kite.txt`.") from exc
         return KiteTicker(self.api_key, self.access_token)
 
     def _resolve_missing_tokens(self, symbols: Sequence[str]) -> None:
@@ -430,7 +462,7 @@ class KiteLiveMarketDataProvider(LiveMarketDataProvider):
         try:
             from kiteconnect import KiteConnect
         except ImportError as exc:
-            raise RuntimeError("Install kiteconnect with `pip install -r requirements.txt`.") from exc
+            raise RuntimeError("Install Kite support with `pip install -r requirements-kite.txt`.") from exc
         kite = KiteConnect(api_key=self.api_key)
         kite.set_access_token(self.access_token)
         instruments = kite.instruments("NSE")
@@ -497,3 +529,30 @@ class KiteLiveMarketDataProvider(LiveMarketDataProvider):
 
 def default_symbols() -> list[str]:
     return list(DEFAULT_SYMBOLS)
+
+
+def mock_latest_candle(symbol: str) -> Candle:
+    prices = {
+        "RELIANCE": 1291.0,
+        "TCS": 2198.9,
+        "INFY": 1197.5,
+        "HDFCBANK": 1992.4,
+        "ICICIBANK": 1442.2,
+        "SBIN": 807.5,
+        "AXISBANK": 1185.0,
+        "LT": 3630.0,
+        "WIPRO": 260.0,
+        "HCLTECH": 1450.0,
+    }
+    clean_symbol = symbol.upper()
+    price = prices.get(clean_symbol, 1000.0)
+    return Candle(
+        timestamp=datetime.now().replace(second=0, microsecond=0),
+        symbol=clean_symbol,
+        open=round(price * 0.998, 2),
+        high=round(price * 1.004, 2),
+        low=round(price * 0.996, 2),
+        close=round(price, 2),
+        volume=125000,
+        previous_close=round(price * 0.992, 2),
+    )
