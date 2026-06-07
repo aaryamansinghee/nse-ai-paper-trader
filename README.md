@@ -8,14 +8,14 @@ This project never places real orders. It uses fake capital only.
 
 - Live auto-refresh watchlist table
 - Green/red Moneycontrol-style price movement coloring
-- NSE corporate announcements scanner with no fake-news fallback
-- Separate live NSE corporate announcement feed
+- Pluggable announcement providers: NSE, broker CSV, manual CSV upload, RSS/news, and mock testing
+- Separate live corporate announcement feed
 - Announcement feed refreshes every 60 seconds
-- Auto-adds only NSE announcement stocks to the watchlist when LTP is between Rs. 200 and Rs. 1,000 by default
+- Auto-adds only announcement stocks to the watchlist when LTP is between Rs. 200 and Rs. 1,000 by default
 - News sentiment classifier: positive, negative, neutral, ignore
 - Announcement quality engine: actionable, routine, unclear, or risky
 - Strategy selector based on the announcement catalyst
-- Auto-generated watchlist from NSE corporate announcements only
+- Auto-generated watchlist from the active announcement provider
 - Strategy scoring engine:
   - news catalyst breakout
   - volume spike
@@ -55,6 +55,9 @@ The dashboard shows:
 - change %
 - quote source
 - quote status
+- source used
+- last successful announcement fetch
+- provider status
 - open fake positions
 - realized and unrealized paper P&L
 - fake execution reason and event log
@@ -104,9 +107,9 @@ The app can run directly as a dashboard. The demo paper session writes fake trad
 
 The dashboard has two different parts:
 
-1. **Live NSE corporate announcement feed**  
-   This checks recent NSE corporate announcements every minute. If a stock has a trusted quote and its LTP is between the selected price range, it is automatically added to the watchlist.
-   The dashboard shows an NSE announcement connection health panel. If it says `FAILED`, the model does not have reliable announcement input and should not be used for auto paper trading.
+1. **Live corporate announcement feed**  
+   This checks the selected announcement provider every minute. If a stock has a trusted quote and its LTP is between the selected price range, it is automatically added to the watchlist.
+   The dashboard shows `Source Used`, `Last Successful Fetch`, `Number of Announcements`, and `Provider Status`.
 
 2. **Live watchlist and scoring table**  
    This uses the auto-added NSE announcement stocks by default. Manual symbols are off by default and are for viewing only.
@@ -146,9 +149,9 @@ Yahoo usually provides 1-minute candles only for recent days. If the date is too
 1. Open the deployed Streamlit app before 9:15 AM IST.
 2. Keep `Auto-refresh watchlist` turned on.
 3. Set refresh seconds to 5 or 10.
-4. Check `NSE announcement connection`.
-   - `OK` means the deployed app fetched rows from the NSE announcement API.
-   - `FAILED` means NSE blocked or rejected the automated request. Do not rely on auto-trading until this is fixed.
+4. Check `Provider Status` and `Source Used`.
+   - `OK` means at least one announcement provider returned usable rows.
+   - `FALLBACK NEEDED` means the selected provider chain returned no usable rows. Do not rely on auto-trading until a provider is working.
 5. Check the quote status column.
    - `Updating` means the app is receiving current-session data.
    - `Market closed / last session` means it is still showing old data.
@@ -228,7 +231,7 @@ Run the app paper-only from Monday to Friday before considering any real-money e
 
 Each day:
 
-1. Confirm `NSE announcement connection` is `OK`.
+1. Confirm `Provider Status` is `OK` and `Number of Announcements` is above 0.
 2. Confirm quote status is `Updating` for any eligible stock.
 3. Keep manual symbols off unless only viewing.
 4. Turn on `Enable fake auto-trading` only during market hours.
@@ -256,25 +259,37 @@ Do not move to real money just because one or two days are green. The five-day t
 
 Even after a strong paper week, start with a much longer paper trial before using real money. This app is designed for learning and controlled paper testing, not guaranteed profit.
 
-## NSE Announcement Access
+## Announcement Provider Access
 
-The system depends on NSE corporate announcements. The official announcements page is:
+The system depends on fresh corporate announcements. Direct automated NSE website access may return `403 Forbidden` on Streamlit Cloud. The app therefore uses a provider architecture:
+
+- `Auto fallback`: tries NSE, then configured manual/broker/RSS sources.
+- `NSE only`: tries NSE directly. This may fail on Streamlit Cloud.
+- `Manual upload`: lets you upload an announcements CSV.
+- `RSS/news`: reads configured RSS feeds and extracts stock symbols from news text.
+- `Broker`: reads a broker/exported CSV path configured by `BROKER_ANNOUNCEMENTS_CSV`.
+- `Mock testing`: uses test announcements so the rest of the app can be checked without live data.
+
+For manual upload, use a CSV with columns like:
 
 ```text
-https://www.nseindia.com/companies-listing/corporate-filings-announcements
+symbol,company,headline,details,date,link
+ABC,ABC Limited,ABC wins large order,Large order win from customer,2026-06-08 09:20:00,
 ```
 
-The app fetches the underlying NSE announcement API with browser-like headers and session cookies. NSE may still block cloud/server requests. The dashboard therefore shows:
+The dashboard does not crash if NSE returns 403. It shows a warning and tries fallback providers. If all providers fail, the app blocks auto paper-trading because the announcement input is not reliable.
 
-- `NSE announcement connection`
-- `Rows fetched`
-- `Last fetch`
+- `Source Used`
+- `Last Successful Fetch`
+- `Number of Announcements`
+- `Provider Status`
 
-If connection is `FAILED`, the app should not auto-trade. To fix that, use one of these safer routes:
+If all providers fail, use one of these safer routes:
 
 - Run the app locally on your machine and check whether NSE allows the request from your IP.
 - Use Kite or another licensed market/news data source.
-- Use an approved backend/proxy that can legally and reliably fetch NSE announcements.
+- Upload the NSE announcements CSV manually from the NSE website.
+- Use an approved backend/proxy that can legally and reliably fetch announcements.
 
 ## Monday Live Monitoring Setup
 

@@ -1,5 +1,4 @@
 from datetime import date, datetime, timedelta
-from types import SimpleNamespace
 import sqlite3
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -9,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from paper_trading_simulator.announcement_quality import classify_announcement_quality
-from paper_trading_simulator.announcements import NSECorporateAnnouncementsScanner, symbols_from_announcements
+from paper_trading_simulator.announcements import build_announcement_provider, symbols_from_announcements
 from paper_trading_simulator.config import TradingConfig
 from paper_trading_simulator.engine import IntradaySimulator
 from paper_trading_simulator.logger import SQLiteTradeLogger
@@ -72,31 +71,21 @@ def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) 
 
 
 @st.cache_data(ttl=60)
-def load_announcement_result(days: int, limit: int):
-    scanner = NSECorporateAnnouncementsScanner()
-    fetched_at = datetime.now().replace(microsecond=0)
-    if hasattr(scanner, "fetch_recent_with_status"):
-        return scanner.fetch_recent_with_status(days=days, limit=limit)
-    try:
-        announcements = scanner.fetch_recent(days=days, limit=limit)
-        return SimpleNamespace(
-            announcements=announcements,
-            ok=True,
-            message=(
-                "Fetched announcements using legacy scanner. Upload the latest "
-                "paper_trading_simulator/announcements.py for full connection health checks."
-            ),
-            fetched_at=fetched_at,
-            source_url="https://www.nseindia.com/companies-listing/corporate-filings-announcements",
-        )
-    except Exception as exc:
-        return SimpleNamespace(
-            announcements=[],
-            ok=False,
-            message=f"NSE announcement fetch failed: {type(exc).__name__}: {exc}",
-            fetched_at=fetched_at,
-            source_url="https://www.nseindia.com/companies-listing/corporate-filings-announcements",
-        )
+def load_announcement_result(
+    days: int,
+    limit: int,
+    provider_mode: str,
+    manual_csv_text: str,
+    rss_urls: tuple[str, ...],
+    enable_mock: bool,
+):
+    provider = build_announcement_provider(
+        mode=provider_mode,
+        manual_csv_text=manual_csv_text,
+        rss_urls=rss_urls,
+        enable_mock=enable_mock,
+    )
+    return provider.fetch(days=days, limit=limit)
 
 
 @st.cache_data(ttl=10)
@@ -377,7 +366,7 @@ def read_table(table_name: str) -> pd.DataFrame:
 
 
 st.title("NSE AI Paper Trader V1.1")
-st.caption("Auto-refresh watchlist, announcement scanner, sentiment, and paper-only trade scoring. No real orders.")
+st.caption("Auto-refresh watchlist, pluggable announcement providers, sentiment, and paper-only trade scoring. No real orders.")
 
 auto_refresh = st.sidebar.checkbox("Auto-refresh watchlist", value=True)
 refresh_seconds = st.sidebar.slider("Refresh seconds", min_value=5, max_value=60, value=10, step=5)
@@ -387,6 +376,41 @@ if auto_refresh:
 st.sidebar.markdown("### Watchlist Settings")
 announcement_days = st.sidebar.slider("Announcement lookback days", min_value=1, max_value=10, value=1)
 max_announcements = st.sidebar.slider("Max announcements", min_value=5, max_value=50, value=20, step=5)
+provider_mode_label = st.sidebar.selectbox(
+    "Announcement source",
+    [
+        "Auto fallback",
+        "NSE only",
+        "Manual upload",
+        "RSS/news",
+        "Broker",
+        "Mock testing",
+    ],
+    index=0,
+)
+provider_mode = {
+    "Auto fallback": "auto",
+    "NSE only": "nse",
+    "Manual upload": "manual",
+    "RSS/news": "rss",
+    "Broker": "broker",
+    "Mock testing": "mock",
+}[provider_mode_label]
+uploaded_announcements = st.sidebar.file_uploader(
+    "Manual announcements CSV",
+    type=["csv"],
+    help="Fallback input. Columns can include symbol, company, headline, details, date/time, link.",
+)
+manual_csv_text = ""
+if uploaded_announcements is not None:
+    manual_csv_text = uploaded_announcements.getvalue().decode("utf-8", errors="ignore")
+rss_url_text = st.sidebar.text_area(
+    "RSS/news URLs",
+    value="",
+    help="One RSS feed URL per line. Used in RSS/news mode or auto fallback.",
+)
+rss_urls = tuple(line.strip() for line in rss_url_text.splitlines() if line.strip())
+enable_mock_announcements = provider_mode == "mock"
 price_filter_min = st.sidebar.number_input("Auto-add minimum LTP", min_value=1, max_value=5000, value=200, step=25)
 price_filter_max = st.sidebar.number_input("Auto-add maximum LTP", min_value=1, max_value=10000, value=1000, step=25)
 include_manual_symbols = st.sidebar.checkbox(
@@ -416,32 +440,57 @@ if st.session_state.get("live_paper_day") != datetime.now(ZoneInfo("Asia/Kolkata
     st.session_state.live_paper_day = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
 
 st.info(
-    "This is the auto-refresh watchlist. It reloads announcements and quote sources. "
-    "When the market is closed, rows show last-session data. If a source is blocked, it is not eligible for auto-trading."
+    "This is the auto-refresh watchlist. It reloads announcement providers and quote sources. "
+    "When the market is closed, rows show last-session data. If a provider is blocked, fallback sources are tried."
 )
 
 if price_filter_min > price_filter_max:
     st.error("Auto-add minimum LTP must be lower than maximum LTP.")
     st.stop()
 
-announcement_result = load_announcement_result(announcement_days, max_announcements)
+announcement_result = load_announcement_result(
+    announcement_days,
+    max_announcements,
+    provider_mode,
+    manual_csv_text,
+    rss_urls,
+    enable_mock_announcements,
+)
 announcements = announcement_result.announcements
-health_cols = st.columns(3)
-health_cols[0].metric("NSE announcement connection", "OK" if announcement_result.ok else "FAILED")
-health_cols[1].metric("Rows fetched", len(announcements))
-health_cols[2].metric("Last fetch", announcement_result.fetched_at.strftime("%H:%M:%S"))
+health_cols = st.columns(4)
+health_cols[0].metric("Source Used", announcement_result.source_used)
+last_success = announcement_result.last_successful_fetch.strftime("%H:%M:%S") if announcement_result.last_successful_fetch else "None"
+health_cols[1].metric("Last Successful Fetch", last_success)
+health_cols[2].metric("Number of Announcements", len(announcements))
+health_cols[3].metric("Provider Status", "OK" if announcement_result.ok else "FALLBACK NEEDED")
 if announcement_result.ok:
     st.success(announcement_result.message)
 else:
-    st.error(announcement_result.message)
+    st.warning(announcement_result.message)
     st.caption(
-        "If this fails on Streamlit Cloud but works in your browser, NSE is likely blocking automated cloud requests. "
-        "In that case, use a broker/licensed feed, run locally, or add a small server-side proxy that is allowed to fetch NSE."
+        "If NSE returns 403 on Streamlit Cloud, the app will try configured fallback providers. "
+        "Use manual CSV, RSS/news, broker data, or mock testing mode instead of relying only on direct NSE access."
     )
+if announcement_result.provider_statuses:
+    provider_status_df = pd.DataFrame(
+        [
+            {
+                "provider": status.provider,
+                "status": "OK" if status.ok else "FAILED",
+                "rows": status.rows,
+                "message": status.message,
+                "fetched_at": status.fetched_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "source": status.source_url,
+            }
+            for status in announcement_result.provider_statuses
+        ]
+    )
+    with st.expander("Provider status details", expanded=not announcement_result.ok):
+        st.dataframe(provider_status_df, use_container_width=True, hide_index=True)
 if not announcements:
     st.warning(
-        "No fresh NSE corporate announcements were fetched. NSE may be blocking the public request, "
-        "or there may be no announcements in the selected lookback window."
+        "No fresh announcements were fetched from the selected provider chain. "
+        "Use manual CSV upload or mock testing mode to verify the rest of the paper-trading pipeline."
     )
 announcement_symbols = symbols_from_announcements(announcements)
 manual_symbols = [item.strip().upper() for item in manual_symbols_text.split(",") if item.strip()] if include_manual_symbols else []
@@ -578,7 +627,7 @@ with top_right:
     buy_watch_count = sum(1 for row in score_rows if row["signal"] == "BUY WATCH")
     st.metric("BUY WATCH signals", buy_watch_count)
 
-st.subheader("Live NSE Corporate Announcement Feed")
+st.subheader("Live Corporate Announcement Feed")
 st.caption(
     f"Auto-refreshes every 60 seconds. Announcement stocks are auto-added only when trusted LTP is between "
     f"Rs. {price_filter_min} and Rs. {price_filter_max}. Manual symbols are off by default and are for viewing only."
