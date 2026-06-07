@@ -30,6 +30,7 @@ This project never places real orders. It uses fake capital only.
 - Auto-trading restricted to eligible NSE announcement stocks only
 - Wait-for-trigger entry logic so the app does not buy immediately on a headline
 - Early-exit target logic so the app aims to exit before stretched targets
+- Five-day paper trial journal: stored fake trades, win rate, profit factor, average win/loss, net fake P&L, and downloadable logs
 
 The dashboard shows:
 
@@ -58,6 +59,7 @@ The dashboard shows:
 - realized and unrealized paper P&L
 - fake execution reason and event log
 - backtest trades using actual historical intraday candles when available
+- five-day paper trial metrics and CSV exports
 
 ## Risk Rules
 
@@ -173,6 +175,7 @@ The fake auto-trader can only enter a trade when all of these are true:
 - The quote status is actively `Updating`.
 - The strategy confidence score is at least 75.
 - The price has reached the trigger price.
+- The time is not after 2:30 PM IST for fresh entries.
 
 The system does not auto-trade manually typed stocks. Backtesting also uses the auto-added announcement stocks by default, so names like Reliance, Infosys, or TCS will not appear unless they came from fresh NSE announcements and passed the price filter.
 
@@ -197,7 +200,61 @@ The app does not treat all positive words equally. It classifies announcements i
 
 Only genuinely actionable categories can become `TRADE_READY`.
 
+## Weighted AI Scoring
+
+Every announcement stock is scored out of 100 before paper trading. The score is split into explainable parts:
+
+- Catalyst quality: 35 points
+- News sentiment: 15 points
+- Liquidity and tradable range: 15 points
+- Market structure: 20 points
+- Risk/reward: 15 points
+
+The dashboard shows these point columns:
+
+- `catalyst pts`
+- `sentiment pts`
+- `liquidity pts`
+- `market pts`
+- `risk pts`
+
+The fake trading engine only considers rows that reach `BUY WATCH` and then become `TRADE_READY`. A stock can have positive news and still be rejected if liquidity is weak, quote data is stale, the price has not crossed the trigger, or the stop/target setup is poor.
+
 Important: Streamlit Cloud runs this fake execution while the dashboard session is alive. For a stronger always-on setup, run the Kite live paper session locally or on a VPS and keep the dashboard open for monitoring.
+
+## Five-Day Paper Trial Protocol
+
+Run the app paper-only from Monday to Friday before considering any real-money experiment.
+
+Each day:
+
+1. Confirm `NSE announcement connection` is `OK`.
+2. Confirm quote status is `Updating` for any eligible stock.
+3. Keep manual symbols off unless only viewing.
+4. Turn on `Enable fake auto-trading` only during market hours.
+5. Download:
+   - today's closed fake trades CSV
+   - today's fake execution log CSV
+   - five-day trade journal CSV
+   - five-day decision journal CSV
+6. Record:
+   - total fake P&L
+   - win rate
+   - profit factor
+   - average win
+   - average loss
+   - biggest mistake/rejection reason
+
+Do not move to real money just because one or two days are green. The five-day trial is mainly for finding bugs, stale data, bad filters, and bad trade reasons. Treat the system as not ready for real money unless all of these are true:
+
+- NSE announcements are fetched reliably every day.
+- The watchlist contains only fresh NSE announcement stocks inside the Rs. 200-Rs. 1,000 filter.
+- Every fake trade has a clear reason, trigger, stop loss, and target.
+- No fake trade is opened from stale quotes, manual symbols, or old news.
+- Daily loss never breaches the paper risk limit.
+- The five-day journal is positive or close to breakeven with an explainable win rate and profit factor.
+
+Even after a strong paper week, start with a much longer paper trial before using real money. This app is designed for learning and controlled paper testing, not guaranteed profit.
 
 ## NSE Announcement Access
 
@@ -221,11 +278,13 @@ If connection is `FAILED`, the app should not auto-trade. To fix that, use one o
 
 ## Monday Live Monitoring Setup
 
-This project is still paper-only. For real-time monitoring you must supply live 1-minute candles from a market-data source. The app can consume a growing CSV file with these columns:
+This project is still paper-only. For real-time monitoring you must supply live 1-minute candles from a market-data source. The dashboard first fetches NSE announcements, filters stocks between Rs. 200 and Rs. 1,000, then builds the watchlist automatically. Do not start the live paper runner with a manual large-cap basket unless you are testing only.
+
+The app can consume a growing CSV file with these columns:
 
 ```text
 timestamp,symbol,open,high,low,close,volume
-2026-06-08 09:15:00,INFY,1490.00,1492.00,1488.50,1491.25,125000
+2026-06-08 09:15:00,ABC,642.00,648.00,639.50,646.25,325000
 ```
 
 Start the dashboard:
@@ -243,20 +302,22 @@ python scripts/run_live_session.py --mode demo --reset --seconds-per-minute 1
 Run against a live-updating CSV file:
 
 ```bash
-python scripts/run_live_session.py --mode csv --reset --csv data/live_candles.csv --symbols RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK --day 2026-06-08
+python scripts/run_live_session.py --mode csv --reset --csv data/live_candles.csv --symbols SYMBOLS_FROM_AUTO_WATCHLIST --day 2026-06-08
 ```
 
-Run against NSE live quotes directly:
+Run against NSE live quotes directly, using only the symbols auto-added by the announcement scanner:
 
 ```bash
-python scripts/run_live_session.py --mode nse --reset --symbols RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK --day 2026-06-08 --poll-seconds 60
+python scripts/run_live_session.py --mode nse --reset --symbols SYMBOLS_FROM_AUTO_WATCHLIST --day 2026-06-08 --poll-seconds 60
 ```
 
-If NSE blocks automated public requests, use Yahoo's NSE symbols:
+If NSE blocks automated public quote requests, use Yahoo's NSE symbols for the same auto-watchlist:
 
 ```bash
-python scripts/run_live_session.py --mode yahoo --reset --symbols RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK --day 2026-06-08 --poll-seconds 60
+python scripts/run_live_session.py --mode yahoo --reset --symbols SYMBOLS_FROM_AUTO_WATCHLIST --day 2026-06-08 --poll-seconds 60
 ```
+
+Replace `SYMBOLS_FROM_AUTO_WATCHLIST` with the comma-separated stocks shown in the dashboard after NSE announcements load. The paper engine will still reject any stock that is not announcement-eligible, not positive, outside Rs. 200-Rs. 1,000, stale, or below trigger.
 
 NSE/Yahoo quotes update during market hours. For production-grade accuracy, use the CSV mode with a licensed broker/data feed.
 
@@ -283,10 +344,10 @@ python scripts/kite_login_helper.py
 python scripts/kite_login_helper.py --request-token "request_token_from_redirect_url"
 ```
 
-Optional: provide instrument tokens manually to avoid resolving them through the Kite instruments API:
+Optional: provide instrument tokens manually for the current auto-watchlist to avoid resolving them through the Kite instruments API:
 
 ```bash
-export KITE_SYMBOL_TOKENS="INFY:408065,RELIANCE:738561,TCS:2953217,HDFCBANK:341249,ICICIBANK:1270529"
+export KITE_SYMBOL_TOKENS="ABC:123456,XYZ:234567"
 ```
 
 Start the dashboard:
@@ -298,7 +359,7 @@ streamlit run dashboard.py
 Start the Kite live paper session:
 
 ```bash
-python scripts/run_live_session.py --mode kite --reset --symbols INFY,RELIANCE,TCS,HDFCBANK,ICICIBANK --day 2026-06-08
+python scripts/run_live_session.py --mode kite --reset --symbols SYMBOLS_FROM_AUTO_WATCHLIST --day 2026-06-08
 ```
 
 The dashboard will show the live ticker, fake positions, paper P&L, rejected signals, stop losses, targets, and end-of-day P&L.

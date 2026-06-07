@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from paper_trading_simulator.announcement_quality import classify_announcement_quality
 from paper_trading_simulator.announcements import NSECorporateAnnouncementsScanner, symbols_from_announcements
 from paper_trading_simulator.config import TradingConfig
 from paper_trading_simulator.engine import IntradaySimulator
@@ -26,6 +27,7 @@ st.set_page_config(page_title="NSE AI Paper Trader", layout="wide")
 config = TradingConfig()
 db_path = Path(config.database_path)
 paper_trader = LivePaperTrader(config)
+trial_logger = SQLiteTradeLogger(config.database_path)
 
 
 def quote_status(timestamp, volume: int | float | None, source: str) -> str:
@@ -261,6 +263,46 @@ def trades_frame(state) -> pd.DataFrame:
     )
 
 
+def performance_summary(state) -> dict:
+    trades = state.closed_trades
+    winners = [trade for trade in trades if trade.pnl > 0]
+    losers = [trade for trade in trades if trade.pnl < 0]
+    gross_profit = sum(trade.pnl for trade in winners)
+    gross_loss = abs(sum(trade.pnl for trade in losers))
+    return {
+        "closed_trades": len(trades),
+        "win_rate": round((len(winners) / len(trades)) * 100, 2) if trades else 0.0,
+        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else (round(gross_profit, 2) if gross_profit else 0.0),
+        "average_win": round(gross_profit / len(winners), 2) if winners else 0.0,
+        "average_loss": round(sum(trade.pnl for trade in losers) / len(losers), 2) if losers else 0.0,
+    }
+
+
+def performance_summary_from_frame(frame: pd.DataFrame) -> dict:
+    if frame.empty or "pnl" not in frame.columns:
+        return {
+            "closed_trades": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "average_win": 0.0,
+            "average_loss": 0.0,
+            "net_pnl": 0.0,
+        }
+    pnl = pd.to_numeric(frame["pnl"], errors="coerce").fillna(0)
+    winners = pnl[pnl > 0]
+    losers = pnl[pnl < 0]
+    gross_profit = winners.sum()
+    gross_loss = abs(losers.sum())
+    return {
+        "closed_trades": int(len(pnl)),
+        "win_rate": round((len(winners) / len(pnl)) * 100, 2) if len(pnl) else 0.0,
+        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else (round(gross_profit, 2) if gross_profit else 0.0),
+        "average_win": round(gross_profit / len(winners), 2) if len(winners) else 0.0,
+        "average_loss": round(losers.sum() / len(losers), 2) if len(losers) else 0.0,
+        "net_pnl": round(pnl.sum(), 2),
+    }
+
+
 def style_positions(frame: pd.DataFrame):
     if frame.empty:
         return frame
@@ -299,6 +341,8 @@ def read_table(table_name: str) -> pd.DataFrame:
         "open_positions": "symbol ASC",
         "latest_ticks": "symbol ASC",
         "ticks": "id DESC",
+        "live_paper_events": "id DESC",
+        "live_paper_trades": "id DESC",
     }.get(table_name)
     if order_by is None:
         return pd.DataFrame()
@@ -344,6 +388,9 @@ if st.sidebar.button("Reset fake trading day"):
 
 if "live_paper_state" not in st.session_state:
     reset_live_paper_state()
+if st.session_state.get("live_paper_day") != datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat():
+    reset_live_paper_state()
+    st.session_state.live_paper_day = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
 
 st.info(
     "This is the auto-refresh watchlist. It reloads announcements and quote sources. "
@@ -385,6 +432,7 @@ for announcement in announcements:
     quote_source = quote["source"] if quote else "No quote"
     change, change_pct = price_change(candle)
     sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
+    quality = classify_announcement_quality(announcement.headline, announcement.details)
     has_trusted_price = candle is not None and quote_source == "Yahoo Finance NSE (.NS)"
     price_is_in_range = bool(candle and price_filter_min <= candle.close <= price_filter_max)
     auto_added = has_trusted_price and price_is_in_range
@@ -403,9 +451,9 @@ for announcement in announcements:
             "company": announcement.company,
             "latest NSE announcement": announcement.headline,
             "sentiment": sentiment.label,
-            "announcement category": score.announcement_category,
-            "quality score": score.announcement_quality_score,
-            "preferred strategy": score.preferred_strategy,
+            "announcement category": quality.category,
+            "quality score": quality.quality_score,
+            "preferred strategy": quality.preferred_strategy,
             "LTP": candle.close if candle else None,
             "change %": change_pct,
             "auto-added": "YES" if auto_added else "NO",
@@ -444,11 +492,16 @@ for announcement in announcements:
             "trigger price": score.trigger_price,
             "stop loss": score.stop_loss,
             "target": score.target,
-            "signal": score.signal,
-            "confidence score": score.confidence_score,
-            "reason for trade": f"{ai_reason}; {score.reason_for_trade}",
-            "quote status": quote_status(candle.timestamp, candle.volume, quote_source) if candle else "No quote",
-            "quote source": quote_source,
+                "signal": score.signal,
+                "confidence score": score.confidence_score,
+                "catalyst pts": score.catalyst_points,
+                "sentiment pts": score.sentiment_points,
+                "liquidity pts": score.liquidity_points,
+                "market pts": score.market_structure_points,
+                "risk pts": score.risk_reward_points,
+                "reason for trade": f"{ai_reason}; {score.reason_for_trade}",
+                "quote status": quote_status(candle.timestamp, candle.volume, quote_source) if candle else "No quote",
+                "quote source": quote_source,
             "news source": score.source,
         }
     )
@@ -491,6 +544,7 @@ if auto_paper_trade:
     )
 
 live_state = st.session_state.live_paper_state
+trial_logger.log_live_paper_state(st.session_state.live_paper_day, live_state)
 
 top_left, top_middle, top_right = st.columns(3)
 with top_left:
@@ -544,6 +598,30 @@ st.caption(
 position_df = positions_frame(live_state)
 trade_df = trades_frame(live_state)
 event_df = pd.DataFrame(live_state.event_log)
+summary = performance_summary(live_state)
+stored_trade_df = read_table("live_paper_trades")
+stored_event_df = read_table("live_paper_events")
+stored_summary = performance_summary_from_frame(stored_trade_df)
+
+st.markdown("#### Today's Paper Metrics")
+today_cols = st.columns(5)
+today_cols[0].metric("Closed trades", summary["closed_trades"])
+today_cols[1].metric("Win rate", f"{summary['win_rate']:.2f}%")
+today_cols[2].metric("Profit factor", summary["profit_factor"])
+today_cols[3].metric("Average win", f"Rs. {summary['average_win']:,.2f}")
+today_cols[4].metric("Average loss", f"Rs. {summary['average_loss']:,.2f}")
+
+st.markdown("#### Five-Day Trial Journal")
+trial_cols = st.columns(6)
+trial_cols[0].metric("Stored trades", stored_summary["closed_trades"])
+trial_cols[1].metric("Stored win rate", f"{stored_summary['win_rate']:.2f}%")
+trial_cols[2].metric("Profit factor", stored_summary["profit_factor"])
+trial_cols[3].metric("Net fake P&L", f"Rs. {stored_summary['net_pnl']:,.2f}")
+trial_cols[4].metric("Average win", f"Rs. {stored_summary['average_win']:,.2f}")
+trial_cols[5].metric("Average loss", f"Rs. {stored_summary['average_loss']:,.2f}")
+st.caption(
+    "Use this stored journal after each live paper day. Do not judge the model from one trade; review the full Monday-Friday sample."
+)
 
 st.markdown("#### Open Fake Positions")
 st.dataframe(style_positions(position_df), use_container_width=True)
@@ -553,6 +631,38 @@ st.dataframe(style_trades(trade_df), use_container_width=True)
 
 st.markdown("#### Fake Execution Log")
 st.dataframe(event_df, use_container_width=True, hide_index=True)
+
+download_cols = st.columns(2)
+download_cols[0].download_button(
+    "Download closed fake trades CSV",
+    trade_df.to_csv(index=False).encode("utf-8"),
+    file_name=f"closed_fake_trades_{st.session_state.live_paper_day}.csv",
+    mime="text/csv",
+    disabled=trade_df.empty,
+)
+download_cols[1].download_button(
+    "Download fake execution log CSV",
+    event_df.to_csv(index=False).encode("utf-8"),
+    file_name=f"fake_execution_log_{st.session_state.live_paper_day}.csv",
+    mime="text/csv",
+    disabled=event_df.empty,
+)
+
+stored_download_cols = st.columns(2)
+stored_download_cols[0].download_button(
+    "Download five-day trade journal CSV",
+    stored_trade_df.to_csv(index=False).encode("utf-8"),
+    file_name="five_day_fake_trade_journal.csv",
+    mime="text/csv",
+    disabled=stored_trade_df.empty,
+)
+stored_download_cols[1].download_button(
+    "Download five-day decision journal CSV",
+    stored_event_df.to_csv(index=False).encode("utf-8"),
+    file_name="five_day_fake_decision_journal.csv",
+    mime="text/csv",
+    disabled=stored_event_df.empty,
+)
 
 with st.expander("Backtest with actual historical NSE prices", expanded=True):
     st.info(
