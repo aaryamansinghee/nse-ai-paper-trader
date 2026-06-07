@@ -378,6 +378,91 @@ class YahooNSELiveQuoteMarketDataProvider(LiveMarketDataProvider):
         return None
 
 
+class HistoricalYahooNSEMarketDataProvider(LiveMarketDataProvider):
+    """Downloads historical Yahoo NSE 1-minute candles for short-window backtests."""
+
+    chart_url = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS"
+
+    def __init__(self, timeout_seconds: float = 15.0):
+        self.timeout_seconds = timeout_seconds
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+    def stream(self, symbols: Sequence[str], trading_day: date) -> Iterator[Candle]:
+        candles: list[Candle] = []
+        missing_symbols: list[str] = []
+        for symbol in symbols:
+            symbol_candles = self.fetch_day_candles(symbol.upper(), trading_day)
+            if symbol_candles:
+                candles.extend(symbol_candles)
+            else:
+                missing_symbols.append(symbol.upper())
+
+        if not candles:
+            raise ValueError(
+                f"No Yahoo 1-minute candles found for {trading_day.isoformat()}. "
+                "The date may be a weekend/holiday, too old for 1-minute Yahoo data, or blocked by the data source."
+            )
+
+        for candle in sorted(candles, key=lambda item: (item.timestamp, item.symbol)):
+            yield candle
+
+    def fetch_day_candles(self, symbol: str, trading_day: date) -> list[Candle]:
+        ist = ZoneInfo("Asia/Kolkata")
+        start = datetime.combine(trading_day, time(9, 0)).replace(tzinfo=ist)
+        end = datetime.combine(trading_day + timedelta(days=1), time(0, 0)).replace(tzinfo=ist)
+        response = self.session.get(
+            self.chart_url.format(symbol=symbol),
+            params={
+                "interval": "1m",
+                "period1": int(start.timestamp()),
+                "period2": int(end.timestamp()),
+                "includePrePost": "false",
+            },
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        result = payload.get("chart", {}).get("result") or []
+        if not result:
+            return []
+
+        data = result[0]
+        meta = data.get("meta", {})
+        previous_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+        timestamps = data.get("timestamp") or []
+        quote = (data.get("indicators", {}).get("quote") or [{}])[0]
+        opens = quote.get("open") or []
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
+        closes = quote.get("close") or []
+        volumes = quote.get("volume") or []
+        candles: list[Candle] = []
+
+        for index, raw_timestamp in enumerate(timestamps):
+            timestamp = datetime.fromtimestamp(raw_timestamp, ist).replace(second=0, microsecond=0, tzinfo=None)
+            if timestamp.date() != trading_day:
+                continue
+            if timestamp.time() < time(9, 15) or timestamp.time() > time(15, 30):
+                continue
+            values = [opens[index], highs[index], lows[index], closes[index]]
+            if any(value is None for value in values):
+                continue
+            candles.append(
+                Candle(
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    open=round(float(opens[index]), 2),
+                    high=round(float(highs[index]), 2),
+                    low=round(float(lows[index]), 2),
+                    close=round(float(closes[index]), 2),
+                    volume=int(volumes[index] or 0),
+                    previous_close=round(float(previous_close), 2) if previous_close is not None else None,
+                )
+            )
+        return candles
+
+
 class KiteLiveMarketDataProvider(LiveMarketDataProvider):
     """Streams live Kite ticks and converts them into 1-minute candles for paper trading."""
 
