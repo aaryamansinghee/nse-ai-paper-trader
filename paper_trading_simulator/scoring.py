@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, time
 
+from .announcement_quality import AnnouncementQuality, classify_announcement_quality
 from .announcements import CorporateAnnouncement
 from .models import Candle
 from .sentiment import SentimentResult
@@ -17,6 +18,9 @@ class StrategyScore:
     target: float
     signal: str
     confidence_score: int
+    announcement_category: str
+    announcement_quality_score: int
+    preferred_strategy: str
     reason_for_trade: str
     source: str
 
@@ -27,6 +31,7 @@ def score_trade_setup(
     candle: Candle | None,
     reward_multiple: float = 2.55,
 ) -> StrategyScore:
+    quality = classify_announcement_quality(announcement.headline, announcement.details)
     ltp = candle.close if candle else 0.0
     if ltp <= 0:
         return StrategyScore(
@@ -39,6 +44,9 @@ def score_trade_setup(
             0.0,
             "WAIT",
             0,
+            quality.category,
+            quality.quality_score,
+            quality.preferred_strategy,
             "No live or fallback quote available yet",
             announcement.source,
         )
@@ -50,8 +58,14 @@ def score_trade_setup(
 
     score = 0
     reasons: list[str] = []
+    score += quality.quality_score
+    reasons.append(f"{quality.category}: {quality.reason}")
 
-    if sentiment.label == "positive":
+    if quality.action in {"REJECT", "IGNORE"}:
+        score -= 30
+        reasons.append(f"announcement action: {quality.action.lower()}")
+
+    if sentiment.label == "positive" and quality.action == "CONSIDER":
         score += 25 + sentiment.score
         reasons.append("news catalyst breakout")
     elif sentiment.label == "negative":
@@ -64,7 +78,10 @@ def score_trade_setup(
         score += 5
         reasons.append("neutral news")
 
-    if candle and candle.volume >= 100000:
+    if candle and candle.volume >= 300000:
+        score += 22
+        reasons.append("strong volume spike")
+    elif candle and candle.volume >= 100000:
         score += 15
         reasons.append("volume spike")
     elif candle and candle.volume > 0:
@@ -92,9 +109,9 @@ def score_trade_setup(
     early_breakout_target = _early_exit_target(trigger, full_target, candle.high if candle else trigger)
     target = round(early_breakout_target, 2)
 
-    if sentiment.label in {"negative", "ignore"}:
+    if sentiment.label in {"negative", "ignore"} or quality.action in {"REJECT", "IGNORE"}:
         signal = "IGNORE"
-    elif confidence >= 70:
+    elif confidence >= 75 and quality.action == "CONSIDER":
         signal = "BUY WATCH"
     elif confidence >= 45:
         signal = "WAIT"
@@ -111,6 +128,9 @@ def score_trade_setup(
         target,
         signal,
         confidence,
+        quality.category,
+        quality.quality_score,
+        quality.preferred_strategy,
         "; ".join(reasons),
         announcement.source,
     )
