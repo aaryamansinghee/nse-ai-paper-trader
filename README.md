@@ -265,12 +265,12 @@ The system depends on fresh corporate announcements. Direct automated NSE websit
 
 - `Auto fallback`: tries NSE, then configured manual/broker/RSS sources.
 - `NSE only`: tries NSE directly. This may fail on Streamlit Cloud.
-- `Manual upload`: lets you upload an announcements CSV.
+- `Manual upload`: lets you upload one or many announcement CSV files.
 - `RSS/news`: reads configured RSS feeds and extracts stock symbols from news text.
 - `Broker`: reads a broker/exported CSV path configured by `BROKER_ANNOUNCEMENTS_CSV`.
 - `Mock testing`: uses test announcements so the rest of the app can be checked without live data.
 
-For manual upload, use a CSV with columns like:
+For manual upload, you can select multiple NSE sub-segment CSV files at once. The app merges them, removes duplicates, and builds one announcement feed. Use CSV columns like:
 
 ```text
 symbol,company,headline,details,date,link

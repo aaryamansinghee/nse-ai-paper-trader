@@ -75,13 +75,13 @@ def load_announcement_result(
     days: int,
     limit: int,
     provider_mode: str,
-    manual_csv_text: str,
+    manual_csv_texts: tuple[str, ...],
     rss_urls: tuple[str, ...],
     enable_mock: bool,
 ):
     provider = build_announcement_provider(
         mode=provider_mode,
-        manual_csv_text=manual_csv_text,
+        manual_csv_text=manual_csv_texts,
         rss_urls=rss_urls,
         enable_mock=enable_mock,
     )
@@ -374,8 +374,8 @@ if auto_refresh:
     components.html(f"<meta http-equiv='refresh' content='{refresh_seconds}'>", height=0)
 
 st.sidebar.markdown("### Watchlist Settings")
-announcement_days = st.sidebar.slider("Announcement lookback days", min_value=1, max_value=10, value=1)
-max_announcements = st.sidebar.slider("Max announcements", min_value=5, max_value=50, value=20, step=5)
+announcement_days = st.sidebar.slider("Announcement lookback days", min_value=1, max_value=10, value=2)
+max_announcements = st.sidebar.slider("Max announcements", min_value=5, max_value=200, value=50, step=5)
 provider_mode_label = st.sidebar.selectbox(
     "Announcement source",
     [
@@ -397,13 +397,16 @@ provider_mode = {
     "Mock testing": "mock",
 }[provider_mode_label]
 uploaded_announcements = st.sidebar.file_uploader(
-    "Manual announcements CSV",
+    "Manual announcements CSV files",
     type=["csv"],
-    help="Fallback input. Columns can include symbol, company, headline, details, date/time, link.",
+    accept_multiple_files=True,
+    help="Upload one or many NSE sub-segment CSV files. Columns can include symbol, company, headline, details, date/time, link.",
 )
-manual_csv_text = ""
-if uploaded_announcements is not None:
-    manual_csv_text = uploaded_announcements.getvalue().decode("utf-8", errors="ignore")
+manual_csv_texts: tuple[str, ...] = tuple(
+    file.getvalue().decode("utf-8", errors="ignore") for file in uploaded_announcements
+)
+if uploaded_announcements:
+    st.sidebar.caption(f"{len(uploaded_announcements)} announcement CSV file(s) selected.")
 rss_url_text = st.sidebar.text_area(
     "RSS/news URLs",
     value="",
@@ -452,7 +455,7 @@ announcement_result = load_announcement_result(
     announcement_days,
     max_announcements,
     provider_mode,
-    manual_csv_text,
+    manual_csv_texts,
     rss_urls,
     enable_mock_announcements,
 )
