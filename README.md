@@ -8,12 +8,14 @@ This project never places real orders. It uses fake capital only.
 
 - Live auto-refresh watchlist table
 - Green/red Moneycontrol-style price movement coloring
-- NSE corporate announcements scanner with safe fallback data
+- NSE corporate announcements scanner with no fake-news fallback
 - Separate live NSE corporate announcement feed
 - Announcement feed refreshes every 60 seconds
-- Auto-adds announcement stocks to the watchlist only when LTP is between Rs. 200 and Rs. 1,000 by default
+- Auto-adds only NSE announcement stocks to the watchlist when LTP is between Rs. 200 and Rs. 1,000 by default
 - News sentiment classifier: positive, negative, neutral, ignore
-- Auto-generated watchlist from companies mentioned in announcements
+- Announcement quality engine: actionable, routine, unclear, or risky
+- Strategy selector based on the announcement catalyst
+- Auto-generated watchlist from NSE corporate announcements only
 - Strategy scoring engine:
   - news catalyst breakout
   - volume spike
@@ -22,7 +24,7 @@ This project never places real orders. It uses fake capital only.
   - opening range breakout
 - Paper trading only
 - No real orders
-- Yahoo/mock quote fallback when a live feed is not connected
+- Clear quote-unavailable status when a live quote is not connected
 - Optional live fake auto-trading engine while the dashboard is open
 - Historical actual-price backtest using recent Yahoo NSE 1-minute candles
 - Auto-trading restricted to eligible NSE announcement stocks only
@@ -42,6 +44,9 @@ The dashboard shows:
 - target
 - signal
 - confidence score
+- announcement category
+- quality score
+- preferred strategy
 - reason for trade
 - announcement eligible
 - AI decision: TRADE_READY, WAIT_FOR_TRIGGER, WAIT, or REJECT
@@ -99,9 +104,10 @@ The dashboard has two different parts:
 
 1. **Live NSE corporate announcement feed**  
    This checks recent NSE corporate announcements every minute. If a stock has a trusted quote and its LTP is between the selected price range, it is automatically added to the watchlist.
+   The dashboard shows an NSE announcement connection health panel. If it says `FAILED`, the model does not have reliable announcement input and should not be used for auto paper trading.
 
 2. **Live watchlist and scoring table**  
-   This scans announcements, classifies sentiment, fetches quotes, colors up/down moves, and scores possible setups.
+   This uses the auto-added NSE announcement stocks by default. Manual symbols are off by default and are for viewing only.
 
 3. **Live paper trading engine**  
    This can create fake buy trades only inside the dashboard when you turn on `Enable fake auto-trading`. It only trades NSE announcement stocks marked `TRADE_READY`. It never sends real broker orders.
@@ -138,13 +144,16 @@ Yahoo usually provides 1-minute candles only for recent days. If the date is too
 1. Open the deployed Streamlit app before 9:15 AM IST.
 2. Keep `Auto-refresh watchlist` turned on.
 3. Set refresh seconds to 5 or 10.
-4. Check the quote status column.
+4. Check `NSE announcement connection`.
+   - `OK` means the deployed app fetched rows from the NSE announcement API.
+   - `FAILED` means NSE blocked or rejected the automated request. Do not rely on auto-trading until this is fixed.
+5. Check the quote status column.
    - `Updating` means the app is receiving current-session data.
    - `Market closed / last session` means it is still showing old data.
-   - `Mock fallback - not live` means the source is blocked and the row is not trusted for auto paper entries.
-5. Turn on `Enable fake auto-trading` in the sidebar only when you are ready to paper trade.
-6. Keep the browser tab open during the session.
-7. Watch:
+   - `Quote unavailable` means the source is blocked or missing and the row is not trusted for auto paper entries.
+6. Turn on `Enable fake auto-trading` in the sidebar only when you are ready to paper trade.
+7. Keep the browser tab open during the session.
+8. Watch:
    - Open Fake Positions
    - Closed Fake Trades
    - Fake Execution Log
@@ -158,16 +167,57 @@ The fake auto-trader can only enter a trade when all of these are true:
 
 - The stock came from the NSE corporate announcement feed.
 - The stock passed the auto-add price filter, Rs. 200 to Rs. 1,000 by default.
+- The announcement quality score is at least 20.
 - The announcement sentiment is positive.
-- The quote source is trusted, not mock fallback.
+- The quote source is trusted.
+- The quote status is actively `Updating`.
 - The strategy confidence score is at least 75.
 - The price has reached the trigger price.
+
+The system does not auto-trade manually typed stocks. Backtesting also uses the auto-added announcement stocks by default, so names like Reliance, Infosys, or TCS will not appear unless they came from fresh NSE announcements and passed the price filter.
 
 The app waits for a higher trigger instead of entering immediately. Example: if a stock is near Rs. 250, the system may wait around Rs. 252 before fake entry if the score is strong enough.
 
 Targets are intentionally early. If a move looks stretched toward Rs. 273 to Rs. 275, the app tries to plan an earlier paper exit instead of waiting for the full stretched move.
 
+No strategy can guarantee profit or breakeven. Intraday trading can lose money even when news, price, and volume look favorable. This app is designed to reduce avoidable mistakes, block stale data, enforce risk limits, and stay paper-only unless real order code is deliberately added later.
+
+## Announcement Quality Engine
+
+The app does not treat all positive words equally. It classifies announcements into categories:
+
+- `order/deal win`: high-quality catalyst, preferred strategy `news catalyst breakout`
+- `regulatory approval`: actionable catalyst, preferred strategy `VWAP reclaim`
+- `business expansion`: actionable catalyst, preferred strategy `volume spike continuation`
+- `fund raise/buyback/bonus`: medium catalyst, preferred strategy `opening range breakout`
+- `strong financial update`: medium catalyst, preferred strategy `previous day high breakout`
+- `routine compliance`: ignored
+- `investor meet/transcript`: usually ignored or watched only
+- `governance/legal risk`: rejected
+
+Only genuinely actionable categories can become `TRADE_READY`.
+
 Important: Streamlit Cloud runs this fake execution while the dashboard session is alive. For a stronger always-on setup, run the Kite live paper session locally or on a VPS and keep the dashboard open for monitoring.
+
+## NSE Announcement Access
+
+The system depends on NSE corporate announcements. The official announcements page is:
+
+```text
+https://www.nseindia.com/companies-listing/corporate-filings-announcements
+```
+
+The app fetches the underlying NSE announcement API with browser-like headers and session cookies. NSE may still block cloud/server requests. The dashboard therefore shows:
+
+- `NSE announcement connection`
+- `Rows fetched`
+- `Last fetch`
+
+If connection is `FAILED`, the app should not auto-trade. To fix that, use one of these safer routes:
+
+- Run the app locally on your machine and check whether NSE allows the request from your IP.
+- Use Kite or another licensed market/news data source.
+- Use an approved backend/proxy that can legally and reliably fetch NSE announcements.
 
 ## Monday Live Monitoring Setup
 

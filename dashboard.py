@@ -15,8 +15,6 @@ from paper_trading_simulator.market_data import (
     HistoricalYahooNSEMarketDataProvider,
     SimulatedNSEMarketDataProvider,
     YahooNSELiveQuoteMarketDataProvider,
-    default_symbols,
-    mock_latest_candle,
 )
 from paper_trading_simulator.live_paper import LivePaperTrader
 from paper_trading_simulator.scoring import score_trade_setup
@@ -36,7 +34,8 @@ def quote_status(timestamp, volume: int | float | None, source: str) -> str:
     if pd.isna(timestamp):
         return "No quote"
     quote_day = pd.Timestamp(timestamp).date()
-    if quote_day != date.today():
+    ist_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    if quote_day != ist_today:
         return "Market closed / last session"
     if volume is not None and volume == 0:
         return "Stale flat candle"
@@ -54,9 +53,11 @@ def price_change(candle) -> tuple[float | None, float | None]:
 def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) -> tuple[str, str]:
     if not is_auto_added:
         return "REJECT", "Only NSE announcement stocks that pass the price filter can be auto-traded"
+    if score.announcement_quality_score < 20:
+        return "REJECT", "Announcement quality is too weak for intraday auto-trading"
     if score.sentiment != "positive":
         return "REJECT", "Announcement is not positive enough for intraday auto-trading"
-    if quote_source.startswith("Mock"):
+    if quote_source != "Yahoo Finance NSE (.NS)":
         return "REJECT", "Live quote is not trusted"
     if not candle or candle.close <= 0:
         return "REJECT", "No usable LTP"
@@ -68,9 +69,9 @@ def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) 
 
 
 @st.cache_data(ttl=60)
-def load_announcements(days: int, limit: int):
+def load_announcement_result(days: int, limit: int):
     scanner = NSECorporateAnnouncementsScanner()
-    return scanner.fetch_recent(days=days, limit=limit)
+    return scanner.fetch_recent_with_status(days=days, limit=limit)
 
 
 @st.cache_data(ttl=10)
@@ -87,13 +88,13 @@ def load_latest_quotes(symbols: tuple[str, ...]):
                 }
             else:
                 quotes[symbol] = {
-                    "candle": mock_latest_candle(symbol),
-                    "source": "Mock fallback - not live",
+                    "candle": None,
+                    "source": "Quote unavailable - not live",
                 }
         except Exception:
             quotes[symbol] = {
-                "candle": mock_latest_candle(symbol),
-                "source": "Mock fallback - not live",
+                "candle": None,
+                "source": "Quote unavailable - not live",
             }
     return quotes
 
@@ -214,6 +215,7 @@ def style_scores(frame: pd.DataFrame):
                 "stop loss": format_money,
                 "target": format_money,
                 "confidence score": lambda value: f"{int(value)}",
+                "quality score": lambda value: f"{int(value)}",
             }
         )
         .hide(axis="index")
@@ -316,13 +318,18 @@ if auto_refresh:
     components.html(f"<meta http-equiv='refresh' content='{refresh_seconds}'>", height=0)
 
 st.sidebar.markdown("### Watchlist Settings")
-announcement_days = st.sidebar.slider("Announcement lookback days", min_value=1, max_value=10, value=3)
+announcement_days = st.sidebar.slider("Announcement lookback days", min_value=1, max_value=10, value=1)
 max_announcements = st.sidebar.slider("Max announcements", min_value=5, max_value=50, value=20, step=5)
 price_filter_min = st.sidebar.number_input("Auto-add minimum LTP", min_value=1, max_value=5000, value=200, step=25)
 price_filter_max = st.sidebar.number_input("Auto-add maximum LTP", min_value=1, max_value=10000, value=1000, step=25)
+include_manual_symbols = st.sidebar.checkbox(
+    "Include manual symbols",
+    value=False,
+    help="Off by default. Auto-trading still only uses NSE announcement stocks.",
+)
 manual_symbols_text = st.sidebar.text_area(
-    "Manual symbols",
-    value="RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK",
+    "Manual symbols for viewing only",
+    value="",
     help="Comma-separated NSE symbols.",
 )
 
@@ -340,16 +347,34 @@ if "live_paper_state" not in st.session_state:
 
 st.info(
     "This is the auto-refresh watchlist. It reloads announcements and quote sources. "
-    "When the market is closed, rows show last-session data. If a source is blocked, rows are marked as mock fallback."
+    "When the market is closed, rows show last-session data. If a source is blocked, it is not eligible for auto-trading."
 )
 
 if price_filter_min > price_filter_max:
     st.error("Auto-add minimum LTP must be lower than maximum LTP.")
     st.stop()
 
-announcements = load_announcements(announcement_days, max_announcements)
+announcement_result = load_announcement_result(announcement_days, max_announcements)
+announcements = announcement_result.announcements
+health_cols = st.columns(3)
+health_cols[0].metric("NSE announcement connection", "OK" if announcement_result.ok else "FAILED")
+health_cols[1].metric("Rows fetched", len(announcements))
+health_cols[2].metric("Last fetch", announcement_result.fetched_at.strftime("%H:%M:%S"))
+if announcement_result.ok:
+    st.success(announcement_result.message)
+else:
+    st.error(announcement_result.message)
+    st.caption(
+        "If this fails on Streamlit Cloud but works in your browser, NSE is likely blocking automated cloud requests. "
+        "In that case, use a broker/licensed feed, run locally, or add a small server-side proxy that is allowed to fetch NSE."
+    )
+if not announcements:
+    st.warning(
+        "No fresh NSE corporate announcements were fetched. NSE may be blocking the public request, "
+        "or there may be no announcements in the selected lookback window."
+    )
 announcement_symbols = symbols_from_announcements(announcements)
-manual_symbols = [item.strip().upper() for item in manual_symbols_text.split(",") if item.strip()]
+manual_symbols = [item.strip().upper() for item in manual_symbols_text.split(",") if item.strip()] if include_manual_symbols else []
 announcement_quotes = load_latest_quotes(tuple(announcement_symbols))
 
 announcement_feed_rows = []
@@ -360,13 +385,13 @@ for announcement in announcements:
     quote_source = quote["source"] if quote else "No quote"
     change, change_pct = price_change(candle)
     sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
-    has_trusted_price = candle is not None and not quote_source.startswith("Mock")
+    has_trusted_price = candle is not None and quote_source == "Yahoo Finance NSE (.NS)"
     price_is_in_range = bool(candle and price_filter_min <= candle.close <= price_filter_max)
     auto_added = has_trusted_price and price_is_in_range
     if auto_added and announcement.symbol not in auto_added_symbols:
         auto_added_symbols.append(announcement.symbol)
     if not has_trusted_price:
-        filter_reason = "Not auto-added: live quote unavailable"
+        filter_reason = "Not auto-added: trusted quote unavailable"
     elif not price_is_in_range:
         filter_reason = f"Not auto-added: LTP outside Rs. {price_filter_min}-{price_filter_max}"
     else:
@@ -378,6 +403,9 @@ for announcement in announcements:
             "company": announcement.company,
             "latest NSE announcement": announcement.headline,
             "sentiment": sentiment.label,
+            "announcement category": score.announcement_category,
+            "quality score": score.announcement_quality_score,
+            "preferred strategy": score.preferred_strategy,
             "LTP": candle.close if candle else None,
             "change %": change_pct,
             "auto-added": "YES" if auto_added else "NO",
@@ -393,7 +421,7 @@ quotes = load_latest_quotes(tuple(watchlist_symbols))
 score_rows = []
 for announcement in announcements:
     sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
-    quote = quotes.get(announcement.symbol)
+    quote = announcement_quotes.get(announcement.symbol)
     candle = quote["candle"] if quote else None
     quote_source = quote["source"] if quote else "No quote"
     score = score_trade_setup(announcement, sentiment, candle, config.target_reward_multiple)
@@ -405,6 +433,9 @@ for announcement in announcements:
             "stock": score.symbol,
             "latest news": score.latest_news,
             "sentiment": score.sentiment,
+            "announcement category": score.announcement_category,
+            "quality score": score.announcement_quality_score,
+            "preferred strategy": score.preferred_strategy,
             "announcement eligible": "YES" if is_auto_added else "NO",
             "AI decision": ai_decision,
             "LTP": score.ltp,
@@ -425,8 +456,10 @@ for announcement in announcements:
 watchlist_rows = []
 for symbol in watchlist_symbols:
     quote = quotes.get(symbol)
-    candle = quote["candle"] if quote else mock_latest_candle(symbol)
-    quote_source = quote["source"] if quote else "Mock fallback - not live"
+    candle = quote["candle"] if quote else None
+    quote_source = quote["source"] if quote else "Quote unavailable - not live"
+    if candle is None:
+        continue
     related_news = [item.headline for item in announcements if item.symbol == symbol]
     change, change_pct = price_change(candle)
     watchlist_rows.append(
@@ -471,7 +504,7 @@ with top_right:
 st.subheader("Live NSE Corporate Announcement Feed")
 st.caption(
     f"Auto-refreshes every 60 seconds. Announcement stocks are auto-added only when trusted LTP is between "
-    f"Rs. {price_filter_min} and Rs. {price_filter_max}. Manual symbols stay in your watchlist separately."
+    f"Rs. {price_filter_min} and Rs. {price_filter_max}. Manual symbols are off by default and are for viewing only."
 )
 announcement_feed_df = pd.DataFrame(announcement_feed_rows)
 feed_col_1, feed_col_2, feed_col_3 = st.columns(3)
@@ -528,10 +561,10 @@ with st.expander("Backtest with actual historical NSE prices", expanded=True):
     )
     backtest_left, backtest_right = st.columns([1, 2])
     with backtest_left:
-        backtest_symbol_options = list(dict.fromkeys(default_symbols() + watchlist_symbols))
-        backtest_defaults = [symbol for symbol in ["INFY", "RELIANCE", "TCS"] if symbol in backtest_symbol_options]
+        backtest_symbol_options = auto_added_symbols
+        backtest_defaults = auto_added_symbols[:5]
         backtest_symbols = st.multiselect(
-            "Backtest stocks",
+            "Backtest auto-added announcement stocks only",
             backtest_symbol_options,
             default=backtest_defaults,
             key="historical_backtest_symbols",
@@ -553,7 +586,7 @@ with st.expander("Backtest with actual historical NSE prices", expanded=True):
 
     if run_backtest:
         if not backtest_symbols:
-            st.warning("Choose at least one stock for the backtest.")
+            st.warning("No eligible NSE announcement stocks are available for backtesting yet.")
         elif pd.Timestamp(backtest_day).weekday() >= 5:
             st.error(f"{backtest_day.strftime('%B %d, %Y')} is a weekend. NSE cash equity was closed.")
         else:
@@ -600,8 +633,8 @@ with st.expander("Optional: synthetic demo paper session", expanded=False):
     st.warning("This demo uses synthetic prices for testing only. It is not live NSE data.")
     left, right = st.columns([1, 2])
     with left:
-        symbol_options = list(dict.fromkeys(default_symbols() + watchlist_symbols))
-        selected_defaults = [symbol for symbol in watchlist_symbols[:3] if symbol in symbol_options] or default_symbols()[:3]
+        symbol_options = watchlist_symbols
+        selected_defaults = watchlist_symbols[:3]
         selected_symbols = st.multiselect("Symbols", symbol_options, default=selected_defaults)
         selected_day = st.date_input("Trading day", value=date.today())
         reset_logs = st.checkbox("Clear old logs before run", value=True)
@@ -613,7 +646,7 @@ with st.expander("Optional: synthetic demo paper session", expanded=False):
 
     if run_button:
         if not selected_symbols:
-            st.warning("Choose at least one symbol.")
+            st.warning("No auto-added announcement symbols are available for this synthetic test.")
         else:
             logger = SQLiteTradeLogger(config.database_path)
             if reset_logs:
