@@ -81,6 +81,7 @@ class LivePaperTrader:
         stop_reason = self._risk_stop_reason(state)
         if stop_reason:
             state.stopped_reason = stop_reason
+            self._square_off_all(state, prices, now, "RISK_STOP_SQUARE_OFF")
             self._log_once(state, "RISK_STOP", stop_reason)
             return state
 
@@ -109,8 +110,20 @@ class LivePaperTrader:
             return
         if signal != "BUY WATCH" or confidence < 75:
             return
-        if "Mock fallback" in quote_status:
-            self._log_rejection(state, symbol, "Rejected: mock fallback quote is not trusted for auto paper entry", now)
+        if quote_status != "Updating":
+            self._log_rejection(state, symbol, f"Rejected: quote status is not live/updating ({quote_status})", now)
+            return
+        if now.time() > time(14, 30):
+            self._log_rejection(state, symbol, "Rejected: no fresh entries after 2:30 PM IST", now)
+            return
+        if ltp <= 0 or trigger <= 0 or stop_loss <= 0 or target <= 0:
+            self._log_rejection(state, symbol, "Rejected: invalid price, trigger, stop loss, or target", now)
+            return
+        if stop_loss >= ltp:
+            self._log_rejection(state, symbol, "Rejected: stop loss must be below entry price", now)
+            return
+        if target <= ltp:
+            self._log_rejection(state, symbol, "Rejected: target must be above entry price", now)
             return
         if symbol in state.positions:
             return

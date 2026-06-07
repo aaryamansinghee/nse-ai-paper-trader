@@ -16,8 +16,17 @@ class CorporateAnnouncement:
     link: str = ""
 
 
+@dataclass(frozen=True)
+class AnnouncementFetchResult:
+    announcements: list[CorporateAnnouncement]
+    ok: bool
+    message: str
+    fetched_at: datetime
+    source_url: str
+
+
 class NSECorporateAnnouncementsScanner:
-    """Fetches recent NSE corporate announcements with a mock fallback for demos."""
+    """Fetches recent NSE corporate announcements from NSE."""
 
     base_url = "https://www.nseindia.com"
     announcements_url = "https://www.nseindia.com/api/corporate-announcements"
@@ -36,8 +45,12 @@ class NSECorporateAnnouncementsScanner:
         )
 
     def fetch_recent(self, days: int = 3, limit: int = 25) -> list[CorporateAnnouncement]:
+        return self.fetch_recent_with_status(days, limit).announcements
+
+    def fetch_recent_with_status(self, days: int = 3, limit: int = 25) -> AnnouncementFetchResult:
         today = date.today()
         from_day = today - timedelta(days=days)
+        fetched_at = datetime.now().replace(microsecond=0)
         try:
             self._warm_session()
             response = self.session.get(
@@ -53,10 +66,23 @@ class NSECorporateAnnouncementsScanner:
             rows = response.json()
             if isinstance(rows, dict):
                 rows = rows.get("data", [])
-            announcements = [self._parse_row(row) for row in rows[:limit]]
-            return [item for item in announcements if item is not None]
-        except Exception:
-            return mock_announcements(limit=limit)
+            announcements = [self._parse_row(row) for row in rows]
+            clean_announcements = [item for item in announcements if item is not None]
+            clean_announcements.sort(key=lambda item: item.published_at, reverse=True)
+            shown_announcements = clean_announcements[:limit]
+            if shown_announcements:
+                message = f"Connected to NSE. Fetched {len(shown_announcements)} announcement rows."
+            else:
+                message = "Connected to NSE, but no announcement rows were returned for the selected window."
+            return AnnouncementFetchResult(shown_announcements, True, message, fetched_at, self.announcements_url)
+        except Exception as exc:
+            return AnnouncementFetchResult(
+                [],
+                False,
+                f"NSE announcement fetch failed: {type(exc).__name__}: {exc}",
+                fetched_at,
+                self.announcements_url,
+            )
 
     def _warm_session(self) -> None:
         if self.session.cookies:
@@ -86,58 +112,9 @@ def _parse_datetime(raw: str) -> datetime:
             continue
     return datetime.now()
 
-
-def mock_announcements(limit: int = 25) -> list[CorporateAnnouncement]:
-    now = datetime.now().replace(second=0, microsecond=0)
-    items = [
-        CorporateAnnouncement(
-            "INFY",
-            "Infosys Limited",
-            "Large digital transformation deal win announced",
-            "Company announced a strategic multi-year technology transformation agreement.",
-            now,
-            "Mock NSE announcement fallback",
-        ),
-        CorporateAnnouncement(
-            "RELIANCE",
-            "Reliance Industries Limited",
-            "Update on commissioning and business expansion",
-            "Company shared a business update related to expansion and operational progress.",
-            now - timedelta(minutes=20),
-            "Mock NSE announcement fallback",
-        ),
-        CorporateAnnouncement(
-            "TCS",
-            "Tata Consultancy Services Limited",
-            "Press release on new partnership",
-            "Company announced a new partnership and service expansion.",
-            now - timedelta(minutes=35),
-            "Mock NSE announcement fallback",
-        ),
-        CorporateAnnouncement(
-            "HDFCBANK",
-            "HDFC Bank Limited",
-            "Routine disclosure under SEBI listing regulations",
-            "Routine compliance filing with no direct trading catalyst.",
-            now - timedelta(minutes=50),
-            "Mock NSE announcement fallback",
-        ),
-        CorporateAnnouncement(
-            "ICICIBANK",
-            "ICICI Bank Limited",
-            "Clarification to exchange",
-            "Company issued a neutral clarification to the exchange.",
-            now - timedelta(minutes=65),
-            "Mock NSE announcement fallback",
-        ),
-    ]
-    return items[:limit]
-
-
 def symbols_from_announcements(announcements: Sequence[CorporateAnnouncement], max_symbols: int = 12) -> list[str]:
     symbols: list[str] = []
     for item in announcements:
         if item.symbol and item.symbol not in symbols:
             symbols.append(item.symbol)
     return symbols[:max_symbols]
-

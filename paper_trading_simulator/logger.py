@@ -79,6 +79,32 @@ class SQLiteTradeLogger:
                     volume INTEGER,
                     source TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS live_paper_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trading_day TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    symbol TEXT,
+                    message TEXT NOT NULL,
+                    price REAL,
+                    quantity INTEGER,
+                    pnl REAL,
+                    UNIQUE(trading_day, timestamp, event_type, symbol, message, price, quantity, pnl)
+                );
+                CREATE TABLE IF NOT EXISTS live_paper_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trading_day TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    exit_price REAL NOT NULL,
+                    entry_time TEXT NOT NULL,
+                    exit_time TEXT NOT NULL,
+                    exit_reason TEXT NOT NULL,
+                    pnl REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    UNIQUE(trading_day, symbol, entry_time, exit_time, exit_reason)
+                );
                 """
             )
 
@@ -90,6 +116,11 @@ class SQLiteTradeLogger:
             connection.execute("DELETE FROM open_positions")
             connection.execute("DELETE FROM ticks")
             connection.execute("DELETE FROM latest_ticks")
+
+    def reset_live_paper_journal(self) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM live_paper_events")
+            connection.execute("DELETE FROM live_paper_trades")
 
     def log_event(self, timestamp, event_type: str, message: str, symbol: str | None = None, strategy: str | None = None, price: float | None = None, quantity: int | None = None, pnl: float | None = None) -> None:
         with self._connect() as connection:
@@ -198,3 +229,47 @@ class SQLiteTradeLogger:
                 """,
                 (symbol, timestamp.isoformat(), last_price, volume, source),
             )
+
+    def log_live_paper_state(self, trading_day: str, state) -> None:
+        with self._connect() as connection:
+            for event in state.event_log:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO live_paper_events (
+                        trading_day, timestamp, event_type, symbol, message, price, quantity, pnl
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trading_day,
+                        event.get("timestamp", ""),
+                        event.get("event_type", ""),
+                        event.get("stock", ""),
+                        event.get("message", ""),
+                        event.get("price"),
+                        event.get("quantity"),
+                        event.get("pnl"),
+                    ),
+                )
+            for trade in state.closed_trades:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO live_paper_trades (
+                        trading_day, symbol, quantity, entry_price, exit_price,
+                        entry_time, exit_time, exit_reason, pnl, reason
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trading_day,
+                        trade.symbol,
+                        trade.quantity,
+                        trade.entry_price,
+                        trade.exit_price,
+                        trade.entry_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        trade.exit_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        trade.exit_reason,
+                        trade.pnl,
+                        trade.reason,
+                    ),
+                )
