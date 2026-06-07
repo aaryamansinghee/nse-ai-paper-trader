@@ -133,17 +133,31 @@ class BrokerAnnouncementProvider:
 class ManualUploadAnnouncementProvider:
     name = "Manual Upload Provider"
 
-    def __init__(self, csv_text: str | None):
-        self.csv_text = csv_text or ""
+    def __init__(self, csv_text: str | Sequence[str] | None):
+        if csv_text is None:
+            self.csv_texts: tuple[str, ...] = ()
+        elif isinstance(csv_text, str):
+            self.csv_texts = (csv_text,)
+        else:
+            self.csv_texts = tuple(item for item in csv_text if item)
 
     def fetch(self, days: int = 3, limit: int = 25) -> AnnouncementFetchResult:
         fetched_at = _now()
-        if not self.csv_text.strip():
+        if not any(text.strip() for text in self.csv_texts):
             return _result(self.name, [], False, "No manual announcement CSV uploaded.", fetched_at, "manual upload")
         try:
-            announcements = parse_announcement_csv(self.csv_text, source=self.name)
-            clean = _clean_and_limit(_within_days(announcements, days), limit)
-            return _result(self.name, clean, bool(clean), f"Manual upload loaded {len(clean)} rows.", fetched_at, "manual upload")
+            announcements: list[CorporateAnnouncement] = []
+            for csv_text in self.csv_texts:
+                announcements.extend(parse_announcement_csv(csv_text, source=self.name))
+            clean = _clean_and_limit(_dedupe_announcements(_within_days(announcements, days)), limit)
+            return _result(
+                self.name,
+                clean,
+                bool(clean),
+                f"Manual upload loaded {len(clean)} rows from {len(self.csv_texts)} CSV file(s).",
+                fetched_at,
+                "manual upload",
+            )
         except Exception as exc:
             return _result(self.name, [], False, f"Manual upload failed: {type(exc).__name__}: {exc}", fetched_at, "manual upload")
 
@@ -243,7 +257,7 @@ class NSECorporateAnnouncementsScanner:
 
 def build_announcement_provider(
     mode: str = "auto",
-    manual_csv_text: str | None = None,
+    manual_csv_text: str | Sequence[str] | None = None,
     rss_urls: Sequence[str] | None = None,
     enable_mock: bool = False,
 ) -> AnnouncementProvider:
@@ -376,6 +390,18 @@ def _clean_and_limit(announcements: Sequence[CorporateAnnouncement | None], limi
     clean = [item for item in announcements if item is not None and item.symbol]
     clean.sort(key=lambda item: item.published_at, reverse=True)
     return clean[:limit]
+
+
+def _dedupe_announcements(announcements: Sequence[CorporateAnnouncement]) -> list[CorporateAnnouncement]:
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[CorporateAnnouncement] = []
+    for item in announcements:
+        key = (item.symbol, item.headline.lower().strip(), item.published_at.strftime("%Y-%m-%d %H:%M:%S"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def _within_days(announcements: Sequence[CorporateAnnouncement], days: int) -> list[CorporateAnnouncement]:
