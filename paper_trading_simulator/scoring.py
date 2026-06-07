@@ -84,10 +84,13 @@ def score_trade_setup(
         reasons.append("opening range breakout zone")
 
     confidence = max(0, min(100, score))
-    trigger = round(max(ltp + price_range * 0.10, ltp * 1.001), 2)
+    entry_buffer_pct = _entry_buffer_pct(confidence, sentiment.label)
+    trigger = round(max(ltp + price_range * 0.18, ltp * (1 + entry_buffer_pct)), 2)
     stop_loss = round(trigger * 0.996, 2)
     risk = trigger - stop_loss
-    target = round(trigger + risk * reward_multiple, 2)
+    full_target = trigger + risk * reward_multiple
+    early_breakout_target = _early_exit_target(trigger, full_target, candle.high if candle else trigger)
+    target = round(early_breakout_target, 2)
 
     if sentiment.label in {"negative", "ignore"}:
         signal = "IGNORE"
@@ -113,6 +116,21 @@ def score_trade_setup(
     )
 
 
+def _entry_buffer_pct(confidence: int, sentiment_label: str) -> float:
+    if sentiment_label != "positive":
+        return 0.006
+    if confidence >= 85:
+        return 0.008
+    if confidence >= 75:
+        return 0.006
+    return 0.004
+
+
+def _early_exit_target(trigger: float, full_target: float, day_high: float) -> float:
+    if day_high > trigger * 1.02:
+        return trigger + (day_high - trigger) * 0.85
+    return trigger + (full_target - trigger) * 0.82
+
+
 def _market_open_window(now: time) -> bool:
     return time(9, 15) <= now <= time(10, 15)
-
