@@ -5,6 +5,7 @@ from paper_trading_simulator.announcements import (
     AnnouncementFetchResult,
     CorporateAnnouncement,
     FallbackAnnouncementProvider,
+    ManualUploadAnnouncementProvider,
     MockAnnouncementProvider,
     ProviderStatus,
     build_announcement_provider,
@@ -42,6 +43,17 @@ class AnnouncementProviderTests(unittest.TestCase):
         self.assertEqual(len(announcements), 1)
         self.assertEqual(announcements[0].symbol, "ABC")
         self.assertIn("large order", announcements[0].headline)
+
+    def test_manual_provider_merges_multiple_csv_files(self):
+        csv_one = "SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME\nABC,ABC Limited,ABC wins order,Large order,08-Jun-2026 09:20:00\n"
+        csv_two = "SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME\nXYZ,XYZ Limited,XYZ receives approval,Approval received,08-Jun-2026 09:25:00\n"
+        provider = ManualUploadAnnouncementProvider((csv_one, csv_two))
+
+        result = provider.fetch(days=2, limit=10)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.announcements), 2)
+        self.assertEqual({item.symbol for item in result.announcements}, {"ABC", "XYZ"})
 
     def test_fallback_uses_next_provider_after_failure(self):
         provider = FallbackAnnouncementProvider([FailingProvider(), WorkingProvider()])
