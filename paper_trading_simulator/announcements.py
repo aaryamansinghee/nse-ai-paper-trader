@@ -286,8 +286,26 @@ def parse_announcement_csv(csv_text: str, source: str = "Manual Upload Provider"
         normalized = {str(key).strip().lower(): value for key, value in row.items() if key is not None}
         symbol = _first_value(normalized, "symbol", "symb", "stock", "ticker", "security")
         company = _first_value(normalized, "company", "company name", "company_name", "sm_name", "name") or symbol
-        headline = _first_value(normalized, "headline", "subject", "desc", "announcement", "title", "details")
-        details = _first_value(normalized, "details", "attchmnttext", "description", "summary") or headline
+        headline = _first_value(
+            normalized,
+            "headline",
+            "subject",
+            "event/subject",
+            "event subject",
+            "event",
+            "desc",
+            "announcement",
+            "title",
+            "details",
+        )
+        details = _first_value(
+            normalized,
+            "details",
+            "attchmnttext",
+            "description",
+            "summary",
+            "type of submission",
+        ) or headline
         published_raw = _first_value(normalized, "published_at", "time", "date", "broadcast date/time", "broadcast_datetime", "an_dt", "dt")
         link = _first_value(normalized, "link", "url", "attachment", "attchmntfile")
         if not symbol or not headline:
