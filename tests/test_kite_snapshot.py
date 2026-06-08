@@ -31,6 +31,32 @@ class KiteSnapshotTests(unittest.TestCase):
 
         self.assertIsNone(candle)
 
+    def test_zero_max_symbols_means_full_equity_scan(self):
+        class FakeKite:
+            def instruments(self, exchange):
+                return [
+                    {"tradingsymbol": "AAA", "instrument_type": "EQ"},
+                    {"tradingsymbol": "BBB", "instrument_type": "EQ"},
+                    {"tradingsymbol": "CCC", "instrument_type": "EQ"},
+                ]
+
+        symbols = KiteQuoteSnapshotProvider._equity_symbols(FakeKite(), "NSE", max_symbols=0)
+
+        self.assertEqual(symbols, ["AAA", "BBB", "CCC"])
+
+    def test_positive_max_symbols_still_limits_scan_when_needed(self):
+        class FakeKite:
+            def instruments(self, exchange):
+                return [
+                    {"tradingsymbol": "AAA", "instrument_type": "EQ"},
+                    {"tradingsymbol": "BBB", "instrument_type": "EQ"},
+                    {"tradingsymbol": "CCC", "instrument_type": "EQ"},
+                ]
+
+        symbols = KiteQuoteSnapshotProvider._equity_symbols(FakeKite(), "NSE", max_symbols=2)
+
+        self.assertEqual(symbols, ["AAA", "BBB"])
+
 
 if __name__ == "__main__":
     unittest.main()
