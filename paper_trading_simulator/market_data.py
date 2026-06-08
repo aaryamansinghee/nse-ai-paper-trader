@@ -627,7 +627,7 @@ class KiteQuoteSnapshotProvider:
 
     def fetch_market_snapshot(
         self,
-        max_symbols: int = 900,
+        max_symbols: int = 0,
         exchange: str = "NSE",
         price_min: float = 100,
         price_max: float = 1000,
@@ -684,7 +684,7 @@ class KiteQuoteSnapshotProvider:
             if symbol.endswith(blocked_suffixes):
                 continue
             symbols.append(symbol)
-            if len(symbols) >= max_symbols:
+            if max_symbols > 0 and len(symbols) >= max_symbols:
                 break
         return symbols
 
