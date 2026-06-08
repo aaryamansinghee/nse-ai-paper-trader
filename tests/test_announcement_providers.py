@@ -34,6 +34,14 @@ class WorkingProvider:
         return AnnouncementFetchResult(announcements, True, "OK", fetched_at, "working", self.name, fetched_at, [status])
 
 
+class UploadedFileLike:
+    def __init__(self, text):
+        self.text = text
+
+    def getvalue(self):
+        return self.text.encode("utf-8")
+
+
 class AnnouncementProviderTests(unittest.TestCase):
     def test_manual_csv_parses_common_columns(self):
         csv_text = "symbol,company,headline,details,date\nABC,ABC Limited,ABC wins large order,Large order win,2026-06-08 09:20:00\n"
@@ -54,6 +62,15 @@ class AnnouncementProviderTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(len(result.announcements), 2)
         self.assertEqual({item.symbol for item in result.announcements}, {"ABC", "XYZ"})
+
+    def test_manual_provider_accepts_uploaded_file_like_objects(self):
+        csv_one = UploadedFileLike("SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME\nABC,ABC Limited,ABC wins order,Large order,08-Jun-2026 09:20:00\n")
+        provider = ManualUploadAnnouncementProvider((csv_one,))
+
+        result = provider.fetch(days=2, limit=10)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.announcements[0].symbol, "ABC")
 
     def test_fallback_uses_next_provider_after_failure(self):
         provider = FallbackAnnouncementProvider([FailingProvider(), WorkingProvider()])
