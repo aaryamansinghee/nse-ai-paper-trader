@@ -60,6 +60,40 @@ def price_change(candle) -> tuple[float | None, float | None]:
     return change, change_pct
 
 
+def explosive_diagnostic(symbol: str, quote: dict | None, min_ltp: float, max_ltp: float, min_change_pct: float) -> dict:
+    if not quote or not quote.get("candle"):
+        return {"stock": symbol, "status": "Not returned by quote source", "reason": "Kite/Yahoo did not return a usable quote"}
+    candle = quote["candle"]
+    source = quote.get("source", "")
+    status = quote.get("status", "")
+    change, change_pct = price_change(candle)
+    traded_value_lakh = round((candle.close * candle.volume) / 100000, 2)
+    day_high_distance_pct = round(((candle.high - candle.close) / candle.close) * 100, 2) if candle.close else None
+    reasons = []
+    if status != "Updating":
+        reasons.append("quote not updating")
+    if not (min_ltp <= candle.close <= max_ltp):
+        reasons.append("outside price filter")
+    if change_pct is None or change_pct < min_change_pct:
+        reasons.append(f"gain below {min_change_pct:.1f}%")
+    if traded_value_lakh < 60:
+        reasons.append("low traded value")
+    if day_high_distance_pct is not None and day_high_distance_pct > 1.5:
+        reasons.append("too far below day high")
+    return {
+        "stock": symbol,
+        "LTP": candle.close,
+        "change %": change_pct,
+        "day high": candle.high,
+        "distance from high %": day_high_distance_pct,
+        "volume": candle.volume,
+        "traded value lakh": traded_value_lakh,
+        "status": status,
+        "quote source": source,
+        "reason": "Eligible for explosive scan" if not reasons else ", ".join(reasons),
+    }
+
+
 def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) -> tuple[str, str]:
     if not is_auto_added:
         return "REJECT", "Only NSE announcement stocks that pass the price filter can be auto-traded"
@@ -151,6 +185,22 @@ def load_kite_market_quotes(
         return quotes, f"Kite market-wide snapshot loaded {len(quotes)} price-filtered stocks"
     except Exception as exc:
         return {}, f"Kite snapshot failed: {type(exc).__name__}: {exc}"
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def load_kite_symbol_quotes(
+    api_key: str,
+    access_token: str,
+    symbols: tuple[str, ...],
+):
+    if not api_key or not access_token or not symbols:
+        return {}, ""
+    try:
+        provider = KiteQuoteSnapshotProvider(api_key, access_token)
+        quotes = provider.fetch_latest_quotes(symbols, price_min=1, price_max=100000)
+        return quotes, f"Kite force-check loaded {len(quotes)} of {len(symbols)} symbol(s)"
+    except Exception as exc:
+        return {}, f"Kite force-check failed: {type(exc).__name__}: {exc}"
 
 
 def reset_live_paper_state() -> None:
@@ -422,6 +472,7 @@ scanner_mode = st.sidebar.selectbox(
 )
 volume_top_n = st.sidebar.slider("Opening watchlist stocks", min_value=5, max_value=20, value=12, step=1)
 explosive_top_n = st.sidebar.slider("Explosive movers shown", min_value=10, max_value=50, value=30, step=5)
+explosive_min_change = st.sidebar.slider("Explosive minimum gain %", min_value=2.0, max_value=20.0, value=5.0, step=0.5)
 market_data_source = st.sidebar.selectbox(
     "Market data source",
     ["Kite market-wide snapshot", "Yahoo liquid fallback"],
@@ -447,6 +498,11 @@ manual_symbols_text = st.sidebar.text_area(
     "Manual symbols for viewing only",
     value="",
     help="Comma-separated NSE symbols.",
+)
+force_check_symbols_text = st.sidebar.text_input(
+    "Force-check symbol",
+    value="OCCLLTD",
+    help="Optional. Type a symbol like OCCLLTD to directly query Kite and diagnose why it is or is not in explosive movers.",
 )
 
 st.sidebar.markdown("### Live Paper Trading")
@@ -474,6 +530,7 @@ if price_filter_min > price_filter_max:
     st.stop()
 
 manual_symbols = [item.strip().upper() for item in manual_symbols_text.split(",") if item.strip()] if include_manual_symbols else []
+force_check_symbols = tuple(item.strip().upper() for item in force_check_symbols_text.split(",") if item.strip())
 announcement_feed_rows = []
 auto_added_symbols = []
 score_rows = []
@@ -497,6 +554,12 @@ if scanner_mode == "Opening Momentum":
             st.warning(f"{kite_message}. Falling back to Yahoo liquid universe.")
             scan_symbols = list(dict.fromkeys(VOLUME_SCANNER_UNIVERSE + manual_symbols))
             raw_quotes = load_latest_quotes(tuple(scan_symbols))
+        force_quotes, force_message = load_kite_symbol_quotes(api_key, access_token, force_check_symbols)
+        if force_quotes:
+            raw_quotes.update(force_quotes)
+            st.info(force_message)
+        elif force_message:
+            st.warning(force_message)
     else:
         scan_symbols = list(dict.fromkeys(VOLUME_SCANNER_UNIVERSE + manual_symbols))
         raw_quotes = load_latest_quotes(tuple(scan_symbols))
@@ -520,6 +583,7 @@ if scanner_mode == "Opening Momentum":
         min_ltp=price_filter_min,
         max_ltp=price_filter_max,
         top_n=explosive_top_n,
+        min_change_pct=float(explosive_min_change),
     )
     combined_setups = []
     seen_symbols = set()
@@ -770,6 +834,19 @@ if scanner_mode == "Opening Momentum":
         for setup in explosive_setups
     ]
     st.dataframe(style_scores(pd.DataFrame(explosive_rows)), use_container_width=True)
+    if force_check_symbols:
+        st.markdown("#### Force-Check Diagnostic")
+        diagnostic_rows = [
+            explosive_diagnostic(
+                symbol,
+                scanner_quotes.get(symbol),
+                float(price_filter_min),
+                float(price_filter_max),
+                float(explosive_min_change),
+            )
+            for symbol in force_check_symbols
+        ]
+        st.dataframe(pd.DataFrame(diagnostic_rows), use_container_width=True, hide_index=True)
     st.markdown("#### Sector Leaders")
     st.dataframe(pd.DataFrame(sector_leader_rows), use_container_width=True, hide_index=True)
 else:
