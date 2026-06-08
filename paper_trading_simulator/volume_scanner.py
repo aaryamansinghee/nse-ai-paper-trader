@@ -210,13 +210,13 @@ def scan_explosive_movers(
         change_pct = row["change_pct"] or 0
         traded_value_lakh = (candle.close * candle.volume) / 100000
         day_high_distance_pct = ((candle.high - candle.close) / candle.close) * 100 if candle.close else 100
-        if change_pct < 3:
+        if change_pct < 2:
             continue
-        if row["relative_volume"] < 0.8:
+        if row["relative_volume"] < 0.7:
             continue
         if traded_value_lakh < _minimum_explosive_traded_value(candle.close):
             continue
-        if day_high_distance_pct > 2.5:
+        if day_high_distance_pct > 1.5:
             continue
         row["explosive_rank_score"] = _explosive_rank_score(row)
         row["explosive_boost"] = _explosive_confidence_boost(row)
@@ -440,6 +440,8 @@ def _explosive_confidence_boost(row: dict) -> int:
         return 12
     if change_pct >= 3:
         return 8
+    if change_pct >= 2:
+        return 6
     return 0
 
 
@@ -458,8 +460,10 @@ def _relative_volume_score(relative_volume: float) -> int:
 def _price_momentum_score(change_pct: float | None, candle: Candle) -> int:
     points = 0
     if change_pct is not None:
-        if 1 <= change_pct <= 12:
+        if 2 <= change_pct <= 12:
             points += 12
+        elif 1 <= change_pct < 2:
+            points += 10
         elif 0.35 <= change_pct < 1:
             points += 8
         elif change_pct > 12:
