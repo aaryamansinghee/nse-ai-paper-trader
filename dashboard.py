@@ -70,7 +70,6 @@ def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) 
     return "TRADE_READY", "Positive NSE announcement, trusted quote, price filter passed, confidence strong, trigger reached"
 
 
-@st.cache_data(ttl=60)
 def load_announcement_result(
     days: int,
     limit: int,
