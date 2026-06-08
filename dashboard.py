@@ -406,10 +406,12 @@ manual_csv_texts: tuple[str, ...] = tuple(
 )
 if uploaded_announcements:
     st.sidebar.caption(f"{len(uploaded_announcements)} announcement CSV file(s) selected.")
+    if provider_mode != "manual":
+        st.sidebar.warning("For CSV trading setup, change Announcement source to Manual upload.")
 rss_url_text = st.sidebar.text_area(
     "RSS/news URLs",
     value="",
-    help="One RSS feed URL per line. Used in RSS/news mode or auto fallback.",
+    help="Optional. Leave blank to use built-in Indian market RSS feeds. One URL per line.",
 )
 rss_urls = tuple(line.strip() for line in rss_url_text.splitlines() if line.strip())
 enable_mock_announcements = provider_mode == "mock"
