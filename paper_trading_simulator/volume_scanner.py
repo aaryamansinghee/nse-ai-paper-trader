@@ -196,6 +196,42 @@ def scan_volume_setups(
     return sorted(setups, key=lambda item: item.confidence_score, reverse=True)
 
 
+def scan_explosive_movers(
+    quotes: dict[str, dict],
+    min_ltp: float = 100,
+    max_ltp: float = 1000,
+    top_n: int = 12,
+) -> list[OpeningMomentumSetup]:
+    """Find OCCLLTD-style opening movers that absolute-volume ranking can miss."""
+    candidates = _candidate_rows(quotes, min_ltp, max_ltp)
+    explosive_rows = []
+    for row in candidates:
+        candle: Candle = row["candle"]
+        change_pct = row["change_pct"] or 0
+        traded_value_lakh = (candle.close * candle.volume) / 100000
+        day_high_distance_pct = ((candle.high - candle.close) / candle.close) * 100 if candle.close else 100
+        if change_pct < 3:
+            continue
+        if row["relative_volume"] < 0.8:
+            continue
+        if traded_value_lakh < _minimum_explosive_traded_value(candle.close):
+            continue
+        if day_high_distance_pct > 2.5:
+            continue
+        row["explosive_rank_score"] = _explosive_rank_score(row)
+        row["explosive_boost"] = _explosive_confidence_boost(row)
+        explosive_rows.append(row)
+
+    explosive_rows.sort(key=lambda item: item["explosive_rank_score"], reverse=True)
+    sector_scores = _sector_strength(candidates)
+    setups: list[OpeningMomentumSetup] = []
+    for rank, row in enumerate(explosive_rows[:top_n], start=1):
+        row["volume_rank"] = rank
+        row["sector_rank"] = sector_scores.get(row["sector"], {}).get("rank", 99)
+        setups.append(_score_candidate(row, len(candidates), sector_scores))
+    return sorted(setups, key=lambda item: item.confidence_score, reverse=True)
+
+
 def sector_leaders_from_quotes(quotes: dict[str, dict], min_ltp: float = 100, max_ltp: float = 1000) -> list[dict]:
     rows = _candidate_rows(quotes, min_ltp, max_ltp)
     leaders = _sector_strength(rows)
@@ -232,7 +268,7 @@ def _candidate_rows(quotes: dict[str, dict], min_ltp: float, max_ltp: float) -> 
         previous_close = candle.previous_close
         change = round(candle.close - previous_close, 2) if previous_close else None
         change_pct = round((change / previous_close) * 100, 2) if previous_close and change is not None else None
-        expected_volume = EXPECTED_OPENING_VOLUME.get(symbol, 500000)
+        expected_volume = _expected_opening_volume(symbol, candle.close)
         relative_volume = round(candle.volume / max(expected_volume, 1), 2)
         rows.append(
             {
@@ -269,6 +305,7 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
     vwap_score = _vwap_score(candle.close, vwap_proxy)
     day_high_distance_score = _day_high_distance_score(day_high_distance_pct)
     liquidity_score = _liquidity_quality_score(candle, row["volume_rank"], total_candidates)
+    explosive_boost = row.get("explosive_boost", 0)
     confidence = min(
         100,
         relative_volume_score
@@ -277,10 +314,11 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
         + sector_score
         + vwap_score
         + day_high_distance_score
-        + liquidity_score,
+        + liquidity_score
+        + explosive_boost,
     )
 
-    strategy = _preferred_strategy(relative_volume_score, opening_breakout_score, vwap_score)
+    strategy = _preferred_strategy(relative_volume_score, opening_breakout_score, vwap_score, explosive_boost)
     trigger = _entry_trigger(candle, confidence)
     stop_loss = round(trigger * 0.995, 2)
     risk = max(trigger - stop_loss, trigger * 0.005)
@@ -292,7 +330,8 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
         f"relative volume {relative_volume_score}/22, price momentum {price_momentum_score}/18, "
         f"opening breakout {opening_breakout_score}/16, sector {sector_score}/12, "
         f"VWAP strength {vwap_score}/12, day-high distance {day_high_distance_score}/10, "
-        f"liquidity {liquidity_score}/10. Enter only after trigger confirmation."
+        f"liquidity {liquidity_score}/10, explosive-mover boost {explosive_boost}. "
+        "Enter only after trigger confirmation."
     )
     return OpeningMomentumSetup(
         symbol=symbol,
@@ -356,10 +395,52 @@ def _sector_strength(rows: list[dict]) -> dict[str, dict]:
 
 def _minimum_liquidity(symbol: str, ltp: float) -> int:
     if ltp < 150:
-        return 250000
+        return 50000
     if ltp < 500:
-        return 150000
-    return 75000
+        return 75000
+    return 50000
+
+
+def _minimum_explosive_traded_value(ltp: float) -> float:
+    if ltp < 150:
+        return 60
+    if ltp < 500:
+        return 80
+    return 100
+
+
+def _expected_opening_volume(symbol: str, ltp: float) -> int:
+    if symbol in EXPECTED_OPENING_VOLUME:
+        return EXPECTED_OPENING_VOLUME[symbol]
+    if ltp < 150:
+        return 100000
+    if ltp < 500:
+        return 125000
+    return 175000
+
+
+def _explosive_rank_score(row: dict) -> float:
+    candle: Candle = row["candle"]
+    change_pct = row["change_pct"] or 0
+    traded_value_lakh = (candle.close * candle.volume) / 100000
+    day_high_distance_pct = ((candle.high - candle.close) / candle.close) * 100 if candle.close else 100
+    return (
+        min(change_pct, 20) * 4
+        + min(row["relative_volume"], 5) * 12
+        + min(traded_value_lakh / 50, 20)
+        + max(0, 20 - day_high_distance_pct * 5)
+    )
+
+
+def _explosive_confidence_boost(row: dict) -> int:
+    change_pct = row["change_pct"] or 0
+    if change_pct >= 10 and row["relative_volume"] >= 1.2:
+        return 18
+    if change_pct >= 5:
+        return 12
+    if change_pct >= 3:
+        return 8
+    return 0
 
 
 def _relative_volume_score(relative_volume: float) -> int:
@@ -442,7 +523,9 @@ def _liquidity_quality_score(candle: Candle, volume_rank: int, total_candidates:
     return min(10, points)
 
 
-def _preferred_strategy(relative_volume_score: int, opening_breakout_score: int, vwap_score: int) -> str:
+def _preferred_strategy(relative_volume_score: int, opening_breakout_score: int, vwap_score: int, explosive_boost: int = 0) -> str:
+    if explosive_boost >= 12:
+        return "Strategy C: Relative Volume Momentum (Explosive Mover)"
     if opening_breakout_score >= 16:
         return "Strategy A: Opening Range Breakout"
     if vwap_score >= 12:
