@@ -321,8 +321,7 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
     strategy = _preferred_strategy(relative_volume_score, opening_breakout_score, vwap_score, explosive_boost)
     trigger = _entry_trigger(candle, confidence)
     stop_loss = round(trigger * 0.995, 2)
-    risk = max(trigger - stop_loss, trigger * 0.005)
-    target = round(trigger + risk * 1.8, 2)
+    target = _target_price(trigger, row, confidence)
     signal, ai_decision = _signal(confidence, candle.close, trigger)
 
     reason = (
@@ -331,7 +330,7 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
         f"opening breakout {opening_breakout_score}/16, sector {sector_score}/12, "
         f"VWAP strength {vwap_score}/12, day-high distance {day_high_distance_score}/10, "
         f"liquidity {liquidity_score}/10, explosive-mover boost {explosive_boost}. "
-        "Enter only after trigger confirmation."
+        f"Momentum target is {round((_target_pct(row, confidence) * 100), 1)}%. Enter only after trigger confirmation."
     )
     return OpeningMomentumSetup(
         symbol=symbol,
@@ -543,6 +542,25 @@ def _entry_trigger(candle: Candle, confidence: int) -> float:
     buffer_pct = 0.001 if confidence >= 82 else 0.002
     breakout_level = max(candle.high * 1.0005, candle.close * (1 + buffer_pct))
     return round(min(breakout_level, candle.close * 1.004), 2)
+
+
+def _target_price(trigger: float, row: dict, confidence: int) -> float:
+    return round(trigger * (1 + _target_pct(row, confidence)), 2)
+
+
+def _target_pct(row: dict, confidence: int) -> float:
+    explosive_boost = row.get("explosive_boost", 0)
+    change_pct = row["change_pct"] or 0
+    relative_volume = row["relative_volume"]
+    if explosive_boost >= 18:
+        return 0.10
+    if explosive_boost >= 12 or (change_pct >= 5 and relative_volume >= 1.5):
+        return 0.08
+    if explosive_boost >= 6 or (change_pct >= 2 and relative_volume >= 1.2):
+        return 0.05
+    if confidence >= 78:
+        return 0.035
+    return 0.025
 
 
 def _signal(confidence: int, ltp: float, trigger: float) -> tuple[str, str]:
