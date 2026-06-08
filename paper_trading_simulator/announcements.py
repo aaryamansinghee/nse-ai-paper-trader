@@ -133,19 +133,14 @@ class BrokerAnnouncementProvider:
 class ManualUploadAnnouncementProvider:
     name = "Manual Upload Provider"
 
-    def __init__(self, csv_text: str | Sequence[str] | None):
-        if csv_text is None:
-            self.csv_texts: tuple[str, ...] = ()
-        elif isinstance(csv_text, str):
-            self.csv_texts = (csv_text,)
-        else:
-            self.csv_texts = tuple(item for item in csv_text if item)
+    def __init__(self, csv_text: object | None):
+        self.csv_texts = _normalize_csv_inputs(csv_text)
 
     def fetch(self, days: int = 3, limit: int = 25) -> AnnouncementFetchResult:
         fetched_at = _now()
-        if not any(text.strip() for text in self.csv_texts):
-            return _result(self.name, [], False, "No manual announcement CSV uploaded.", fetched_at, "manual upload")
         try:
+            if not any(text.strip() for text in self.csv_texts):
+                return _result(self.name, [], False, "No manual announcement CSV uploaded.", fetched_at, "manual upload")
             announcements: list[CorporateAnnouncement] = []
             for csv_text in self.csv_texts:
                 announcements.extend(parse_announcement_csv(csv_text, source=self.name))
@@ -282,6 +277,7 @@ def build_announcement_provider(
 
 
 def parse_announcement_csv(csv_text: str, source: str = "Manual Upload Provider") -> list[CorporateAnnouncement]:
+    csv_text = _to_text(csv_text)
     reader = csv.DictReader(io.StringIO(csv_text))
     announcements: list[CorporateAnnouncement] = []
     for row in reader:
@@ -314,6 +310,33 @@ def symbols_from_announcements(announcements: Sequence[CorporateAnnouncement], m
         if item.symbol and item.symbol not in symbols:
             symbols.append(item.symbol)
     return symbols[:max_symbols]
+
+
+def _normalize_csv_inputs(csv_input: object | None) -> tuple[str, ...]:
+    if csv_input is None:
+        return ()
+    if isinstance(csv_input, (str, bytes, bytearray)):
+        return (_to_text(csv_input),)
+    if hasattr(csv_input, "getvalue"):
+        return (_to_text(csv_input),)
+    try:
+        return tuple(_to_text(item) for item in csv_input if _to_text(item).strip())
+    except TypeError:
+        return (_to_text(csv_input),)
+
+
+def _to_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8-sig", errors="ignore")
+    if isinstance(value, bytearray):
+        return bytes(value).decode("utf-8-sig", errors="ignore")
+    if hasattr(value, "getvalue"):
+        return _to_text(value.getvalue())
+    return str(value)
 
 
 def _result(
