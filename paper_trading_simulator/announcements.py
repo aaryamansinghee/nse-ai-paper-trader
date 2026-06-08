@@ -13,6 +13,45 @@ import xml.etree.ElementTree as ET
 import requests
 
 
+DEFAULT_RSS_URLS = (
+    "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+    "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms",
+    "https://www.moneycontrol.com/rss/marketreports.xml",
+    "https://www.business-standard.com/rss/markets-106.rss",
+)
+
+COMMON_COMPANY_SYMBOLS = {
+    "reliance industries": "RELIANCE",
+    "tata motors": "TATAMOTORS",
+    "tata steel": "TATASTEEL",
+    "tcs": "TCS",
+    "infosys": "INFY",
+    "hdfc bank": "HDFCBANK",
+    "icici bank": "ICICIBANK",
+    "axis bank": "AXISBANK",
+    "state bank of india": "SBIN",
+    "sbi": "SBIN",
+    "larsen": "LT",
+    "bharti airtel": "BHARTIARTL",
+    "itc": "ITC",
+    "mahindra": "M&M",
+    "maruti": "MARUTI",
+    "bajaj finance": "BAJFINANCE",
+    "adani enterprises": "ADANIENT",
+    "adani ports": "ADANIPORTS",
+    "hindustan unilever": "HINDUNILVR",
+    "sun pharma": "SUNPHARMA",
+    "cipla": "CIPLA",
+    "dr reddy": "DRREDDY",
+    "wipro": "WIPRO",
+    "tech mahindra": "TECHM",
+    "coal india": "COALINDIA",
+    "ongc": "ONGC",
+    "ntpc": "NTPC",
+    "power grid": "POWERGRID",
+}
+
+
 @dataclass(frozen=True)
 class CorporateAnnouncement:
     symbol: str
@@ -174,7 +213,8 @@ class RSSNewsAnnouncementProvider:
     name = "RSS/News Provider"
 
     def __init__(self, urls: Sequence[str] | None = None, timeout_seconds: float = 10.0):
-        self.urls = [url.strip() for url in (urls or []) if url.strip()]
+        selected_urls = urls or DEFAULT_RSS_URLS
+        self.urls = [url.strip() for url in selected_urls if url.strip()]
         self.timeout_seconds = timeout_seconds
 
     def fetch(self, days: int = 3, limit: int = 25) -> AnnouncementFetchResult:
@@ -284,8 +324,7 @@ def build_announcement_provider(
     if manual_csv_text:
         providers.append(ManualUploadAnnouncementProvider(manual_csv_text))
     providers.append(BrokerAnnouncementProvider())
-    if rss_urls:
-        providers.append(RSSNewsAnnouncementProvider(rss_urls))
+    providers.append(RSSNewsAnnouncementProvider(rss_urls or DEFAULT_RSS_URLS))
     return FallbackAnnouncementProvider(providers)
 
 
@@ -336,7 +375,10 @@ def parse_announcement_csv(csv_text: str, source: str = "Manual Upload Provider"
         )
     if announcements:
         return announcements
-    return _parse_positional_announcement_csv(csv_text, source, delimiter)
+    positional = _parse_positional_announcement_csv(csv_text, source, delimiter)
+    if positional:
+        return positional
+    return _parse_loose_nse_lines(csv_text, source)
 
 
 def _parse_positional_announcement_csv(csv_text: str, source: str, delimiter: str) -> list[CorporateAnnouncement]:
@@ -374,6 +416,65 @@ def _parse_positional_announcement_csv(csv_text: str, source: str, delimiter: st
             )
         )
     return announcements
+
+
+def _parse_loose_nse_lines(csv_text: str, source: str) -> list[CorporateAnnouncement]:
+    text = _strip_html(csv_text)
+    announcements: list[CorporateAnnouncement] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "SYMBOL" in line.upper():
+            continue
+        cells = _split_loose_line(line)
+        if len(cells) < 3:
+            continue
+        symbol = cells[0].strip().upper()
+        if not re.fullmatch(r"[A-Z0-9&.-]{2,20}", symbol):
+            continue
+        company = cells[1].strip() if len(cells) > 1 else symbol
+        headline = cells[2].strip() if len(cells) > 2 else ""
+        details = cells[3].strip() if len(cells) > 3 else headline
+        published_raw = _first_date_like(cells)
+        if not headline:
+            continue
+        announcements.append(
+            CorporateAnnouncement(
+                symbol=symbol,
+                company=company or symbol,
+                headline=headline,
+                details=details or headline,
+                published_at=_parse_datetime(published_raw),
+                source=source,
+            )
+        )
+    return announcements
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"</t[dh]>\s*<t[dh][^>]*>", ",", text, flags=re.IGNORECASE)
+    text = re.sub(r"</tr\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    return text
+
+
+def _split_loose_line(line: str) -> list[str]:
+    if "," in line:
+        try:
+            return next(csv.reader([line]))
+        except csv.Error:
+            return [part.strip() for part in line.split(",")]
+    if "\t" in line:
+        return [part.strip() for part in line.split("\t")]
+    if "|" in line:
+        return [part.strip() for part in line.split("|")]
+    return [part.strip() for part in re.split(r"\s{2,}", line) if part.strip()]
+
+
+def _first_date_like(cells: Sequence[str]) -> str:
+    for cell in cells:
+        if re.search(r"\d{1,2}[-/][A-Za-z0-9]{2,}[-/]\d{4}", cell) or re.search(r"\d{4}-\d{2}-\d{2}", cell):
+            return cell.strip()
+    return ""
 
 
 def _header_index(header: Sequence[str], *names: str) -> int | None:
@@ -514,6 +615,10 @@ def _xml_text(item, tag: str) -> str:
 
 def _extract_symbol(text: str) -> str:
     text = text or ""
+    lowered = text.lower()
+    for company_name, symbol in COMMON_COMPANY_SYMBOLS.items():
+        if company_name in lowered:
+            return symbol
     for pattern in (r"\bNSE[:\-\s]+([A-Z]{2,12})\b", r"\(([A-Z]{2,12})\)", r"\b([A-Z]{2,12})\b"):
         for match in re.finditer(pattern, text):
             symbol = match.group(1)
