@@ -278,7 +278,9 @@ def build_announcement_provider(
 
 def parse_announcement_csv(csv_text: str, source: str = "Manual Upload Provider") -> list[CorporateAnnouncement]:
     csv_text = _to_text(csv_text)
-    reader = csv.DictReader(io.StringIO(csv_text))
+    csv_text = _trim_to_csv_header(csv_text)
+    delimiter = _detect_delimiter(csv_text)
+    reader = csv.DictReader(io.StringIO(csv_text), delimiter=delimiter)
     announcements: list[CorporateAnnouncement] = []
     for row in reader:
         normalized = {str(key).strip().lower(): value for key, value in row.items() if key is not None}
@@ -302,6 +304,27 @@ def parse_announcement_csv(csv_text: str, source: str = "Manual Upload Provider"
             )
         )
     return announcements
+
+
+def _trim_to_csv_header(csv_text: str) -> str:
+    lines = [line for line in csv_text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    for index, line in enumerate(lines):
+        lowered = line.lower()
+        if "symbol" in lowered and ("company" in lowered or "subject" in lowered or "details" in lowered):
+            return "\n".join(lines[index:])
+    return "\n".join(lines)
+
+
+def _detect_delimiter(csv_text: str) -> str:
+    sample = "\n".join(csv_text.splitlines()[:5])
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",\t;|").delimiter
+    except csv.Error:
+        header = csv_text.splitlines()[0] if csv_text.splitlines() else ""
+        counts = {delimiter: header.count(delimiter) for delimiter in [",", "\t", ";", "|"]}
+        return max(counts, key=counts.get) if any(counts.values()) else ","
 
 
 def symbols_from_announcements(announcements: Sequence[CorporateAnnouncement], max_symbols: int = 12) -> list[str]:
