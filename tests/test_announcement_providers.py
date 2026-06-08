@@ -4,6 +4,7 @@ import unittest
 from paper_trading_simulator.announcements import (
     AnnouncementFetchResult,
     CorporateAnnouncement,
+    DEFAULT_RSS_URLS,
     FallbackAnnouncementProvider,
     ManualUploadAnnouncementProvider,
     MockAnnouncementProvider,
@@ -134,6 +135,31 @@ class AnnouncementProviderTests(unittest.TestCase):
         parsed = _parse_rss(xml_text, "https://example.com/feed")
 
         self.assertEqual(parsed[0].symbol, "TATAMOTORS")
+
+    def test_default_rss_sources_include_live_news_searches(self):
+        joined = " ".join(DEFAULT_RSS_URLS).lower()
+
+        self.assertGreaterEqual(len(DEFAULT_RSS_URLS), 8)
+        self.assertIn("news.google.com", joined)
+        self.assertIn("moneycontrol", joined)
+
+    def test_rss_parser_maps_nicknames_and_blocks_false_symbols(self):
+        xml_text = (
+            "<rss><channel>"
+            "<item><title>HUL Share Price Live Updates: stock price analysis</title>"
+            "<description>Market update</description><link>https://example.com/hul</link>"
+            "<pubDate>Mon, 08 Jun 2026 09:20:00 GMT</pubDate></item>"
+            "<item><title>Tech View: RSI support remains critical for Nifty bulls</title>"
+            "<description>Index commentary</description><link>https://example.com/rsi</link>"
+            "<pubDate>Mon, 08 Jun 2026 09:21:00 GMT</pubDate></item>"
+            "</channel></rss>"
+        )
+        from paper_trading_simulator.announcements import _parse_rss
+
+        parsed = _parse_rss(xml_text, "https://example.com/feed")
+
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].symbol, "HINDUNILVR")
 
 
 if __name__ == "__main__":
