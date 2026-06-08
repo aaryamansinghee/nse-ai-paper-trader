@@ -633,8 +633,9 @@ with top_right:
 
 st.subheader("Live Corporate Announcement Feed")
 st.caption(
-    f"Auto-refreshes every 60 seconds. Announcement stocks are auto-added only when trusted LTP is between "
-    f"Rs. {price_filter_min} and Rs. {price_filter_max}. Manual symbols are off by default and are for viewing only."
+    f"The dashboard refreshes automatically, but RSS/news counts change only when source feeds publish new items. "
+    f"Announcement stocks are auto-added only when trusted LTP is between Rs. {price_filter_min} and Rs. {price_filter_max}. "
+    "Manual symbols are off by default and are for viewing only."
 )
 announcement_feed_df = pd.DataFrame(announcement_feed_rows)
 feed_col_1, feed_col_2, feed_col_3 = st.columns(3)
