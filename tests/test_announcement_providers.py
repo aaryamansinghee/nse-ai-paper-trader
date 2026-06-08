@@ -52,6 +52,20 @@ class AnnouncementProviderTests(unittest.TestCase):
         self.assertEqual(announcements[0].symbol, "ABC")
         self.assertIn("large order", announcements[0].headline)
 
+    def test_manual_csv_skips_nse_title_row(self):
+        csv_text = (
+            "CF-AN-equities-07-Jun-2026\n"
+            "SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME,RECEIPT\n"
+            "IXIGO,Le Travenues Technology Limited,General Updates,Investor FAQs - Acquisition,07-Jun-2026 22:54:43,2026-06-07 22:54:43\n"
+        )
+
+        announcements = parse_announcement_csv(csv_text)
+
+        self.assertEqual(len(announcements), 1)
+        self.assertEqual(announcements[0].symbol, "IXIGO")
+        self.assertEqual(announcements[0].company, "Le Travenues Technology Limited")
+        self.assertEqual(announcements[0].headline, "General Updates")
+
     def test_manual_provider_merges_multiple_csv_files(self):
         csv_one = "SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME\nABC,ABC Limited,ABC wins order,Large order,08-Jun-2026 09:20:00\n"
         csv_two = "SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME\nXYZ,XYZ Limited,XYZ receives approval,Approval received,08-Jun-2026 09:25:00\n"
