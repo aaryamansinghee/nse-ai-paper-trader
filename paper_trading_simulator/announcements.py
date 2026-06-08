@@ -144,7 +144,20 @@ class ManualUploadAnnouncementProvider:
             announcements: list[CorporateAnnouncement] = []
             for csv_text in self.csv_texts:
                 announcements.extend(parse_announcement_csv(csv_text, source=self.name))
-            clean = _clean_and_limit(_dedupe_announcements(_within_days(announcements, days)), limit)
+            deduped = _dedupe_announcements(announcements)
+            within_window = _within_days(deduped, days)
+            clean = _clean_and_limit(within_window, limit)
+            if deduped and not clean:
+                oldest = min(item.published_at for item in deduped).strftime("%Y-%m-%d")
+                newest = max(item.published_at for item in deduped).strftime("%Y-%m-%d")
+                return _result(
+                    self.name,
+                    [],
+                    False,
+                    f"Manual upload parsed {len(deduped)} rows, but none are inside the {days}-day lookback window. File dates: {oldest} to {newest}. Increase lookback days.",
+                    fetched_at,
+                    "manual upload",
+                )
             return _result(
                 self.name,
                 clean,
@@ -321,7 +334,66 @@ def parse_announcement_csv(csv_text: str, source: str = "Manual Upload Provider"
                 link=(link or "").strip(),
             )
         )
+    if announcements:
+        return announcements
+    return _parse_positional_announcement_csv(csv_text, source, delimiter)
+
+
+def _parse_positional_announcement_csv(csv_text: str, source: str, delimiter: str) -> list[CorporateAnnouncement]:
+    rows = list(csv.reader(io.StringIO(csv_text), delimiter=delimiter))
+    if not rows:
+        return []
+    header = [cell.strip().lower() for cell in rows[0]]
+    symbol_index = _header_index(header, "symbol", "symb", "stock")
+    company_index = _header_index(header, "company name", "company", "name")
+    headline_index = _header_index(header, "subject", "event/subject", "event subject", "event", "details")
+    details_index = _header_index(header, "details", "type of submission", "description")
+    date_index = _header_index(header, "broadcast date/time", "date", "time", "receipt", "dissemination")
+    if symbol_index is None:
+        return []
+    announcements: list[CorporateAnnouncement] = []
+    for row in rows[1:]:
+        if len(row) <= symbol_index:
+            continue
+        symbol = row[symbol_index].strip().upper()
+        if not symbol or symbol == "SYMBOL":
+            continue
+        company = _cell(row, company_index) or symbol
+        headline = _cell(row, headline_index) or _cell(row, details_index)
+        details = _cell(row, details_index) or headline
+        if not headline:
+            continue
+        announcements.append(
+            CorporateAnnouncement(
+                symbol=symbol,
+                company=company,
+                headline=headline,
+                details=details,
+                published_at=_parse_datetime(_cell(row, date_index)),
+                source=source,
+            )
+        )
     return announcements
+
+
+def _header_index(header: Sequence[str], *names: str) -> int | None:
+    for name in names:
+        lowered = name.lower()
+        for index, cell in enumerate(header):
+            if cell == lowered:
+                return index
+    for name in names:
+        lowered = name.lower()
+        for index, cell in enumerate(header):
+            if lowered in cell:
+                return index
+    return None
+
+
+def _cell(row: Sequence[str], index: int | None) -> str:
+    if index is None or index >= len(row):
+        return ""
+    return row[index].strip()
 
 
 def _trim_to_csv_header(csv_text: str) -> str:
