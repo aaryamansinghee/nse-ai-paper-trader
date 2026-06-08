@@ -49,11 +49,29 @@ class LivePaperTraderTests(unittest.TestCase):
         self.assertEqual(len(state.positions), 1)
         self.assertEqual(state.trades_taken, 1)
 
+    def test_rejects_entry_before_920(self):
+        state = self.trader.create_state()
+        early = datetime.combine(datetime.today(), time(9, 19))
+        self.trader.process_setups(state, [self.row], early)
+        self.assertEqual(len(state.positions), 0)
+
     def test_rejects_late_fresh_entry(self):
         state = self.trader.create_state()
-        late = datetime.combine(datetime.today(), time(14, 31))
+        late = datetime.combine(datetime.today(), time(9, 41))
         self.trader.process_setups(state, [self.row], late)
         self.assertEqual(len(state.positions), 0)
+
+    def test_exits_open_position_at_945_opening_window_close(self):
+        state = self.trader.create_state()
+        self.trader.process_setups(state, [self.row], self.now)
+        later = datetime.combine(datetime.today(), time(9, 45))
+        exit_row = dict(self.row, **{"LTP": 253.0})
+
+        self.trader.process_setups(state, [exit_row], later)
+
+        self.assertEqual(len(state.positions), 0)
+        self.assertEqual(len(state.closed_trades), 1)
+        self.assertEqual(state.closed_trades[0].exit_reason, "OPENING_WINDOW_EXIT_9_45_AM")
 
 
 if __name__ == "__main__":
