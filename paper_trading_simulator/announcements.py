@@ -18,6 +18,11 @@ DEFAULT_RSS_URLS = (
     "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms",
     "https://www.moneycontrol.com/rss/marketreports.xml",
     "https://www.business-standard.com/rss/markets-106.rss",
+    "https://news.google.com/rss/search?q=India%20NSE%20listed%20company%20stock%20announcement&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=NSE%20stock%20order%20contract%20acquisition%20approval&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=site%3Amoneycontrol.com%20NSE%20stock%20order%20contract%20acquisition%20approval&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=site%3Aeconomictimes.indiatimes.com%20NSE%20stock%20order%20contract%20acquisition%20approval&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://news.google.com/rss/search?q=site%3Abusiness-standard.com%20India%20stock%20order%20contract%20acquisition%20approval&hl=en-IN&gl=IN&ceid=IN:en",
 )
 
 COMMON_COMPANY_SYMBOLS = {
@@ -40,6 +45,14 @@ COMMON_COMPANY_SYMBOLS = {
     "adani enterprises": "ADANIENT",
     "adani ports": "ADANIPORTS",
     "hindustan unilever": "HINDUNILVR",
+    "hcl tech": "HCLTECH",
+    "hcl technologies": "HCLTECH",
+    "hul": "HINDUNILVR",
+    "hdfc": "HDFCBANK",
+    "tata motors pv": "TATAMOTORS",
+    "bharat petroleum": "BPCL",
+    "bpcl": "BPCL",
+    "upl": "UPL",
     "sun pharma": "SUNPHARMA",
     "cipla": "CIPLA",
     "dr reddy": "DRREDDY",
@@ -230,9 +243,13 @@ class RSSNewsAnnouncementProvider:
                 announcements.extend(_parse_rss(response.text, url))
             except Exception as exc:
                 errors.append(f"{_domain(url)}: {type(exc).__name__}")
-        clean = _clean_and_limit(_within_days(announcements, days), limit)
+        clean = _clean_and_limit(_dedupe_announcements(_within_days(announcements, days)), limit)
         if clean:
-            return _result(self.name, clean, True, f"RSS/news provider loaded {len(clean)} rows.", fetched_at, ", ".join(self.urls))
+            message = (
+                f"RSS/news provider loaded {len(clean)} rows from {len(self.urls)} feed(s). "
+                "This is a latest-news snapshot; the count changes only when source feeds publish new items."
+            )
+            return _result(self.name, clean, True, message, fetched_at, ", ".join(self.urls))
         message = "RSS/news provider returned no usable symbol-linked announcements."
         if errors:
             message += " Errors: " + "; ".join(errors[:3])
@@ -619,10 +636,37 @@ def _extract_symbol(text: str) -> str:
     for company_name, symbol in COMMON_COMPANY_SYMBOLS.items():
         if company_name in lowered:
             return symbol
+    blocked_tokens = {
+        "NSE",
+        "BSE",
+        "INDIA",
+        "LIMITED",
+        "LTD",
+        "THE",
+        "AND",
+        "FOR",
+        "SEBI",
+        "IPO",
+        "LIVE",
+        "UPDATE",
+        "UPDATES",
+        "SHARE",
+        "PRICE",
+        "STOCK",
+        "MARKET",
+        "CLOSE",
+        "CLOSING",
+        "TECH",
+        "VIEW",
+        "BULLS",
+        "RSI",
+        "PV",
+        "SC",
+    }
     for pattern in (r"\bNSE[:\-\s]+([A-Z]{2,12})\b", r"\(([A-Z]{2,12})\)", r"\b([A-Z]{2,12})\b"):
         for match in re.finditer(pattern, text):
             symbol = match.group(1)
-            if symbol not in {"NSE", "BSE", "INDIA", "LIMITED", "LTD", "THE", "AND", "FOR"}:
+            if symbol not in blocked_tokens:
                 return symbol
     return ""
 
