@@ -2,7 +2,7 @@ from datetime import datetime
 import unittest
 
 from paper_trading_simulator.models import Candle
-from paper_trading_simulator.volume_scanner import scan_volume_setups, sector_leaders_from_quotes
+from paper_trading_simulator.volume_scanner import scan_explosive_movers, scan_volume_setups, sector_leaders_from_quotes
 
 
 class VolumeScannerTests(unittest.TestCase):
@@ -83,6 +83,45 @@ class VolumeScannerTests(unittest.TestCase):
 
         self.assertEqual(leaders[0]["sector"], "Banking")
         self.assertGreater(leaders[0]["sector score"], 0)
+
+    def test_explosive_mover_lane_captures_occlltd_style_smallcap(self):
+        quotes = {
+            "OCCLLTD": {
+                "candle": Candle(
+                    timestamp=datetime(2026, 6, 8, 9, 35),
+                    symbol="OCCLLTD",
+                    open=115.5,
+                    high=135.0,
+                    low=115.5,
+                    close=133.59,
+                    volume=192942,
+                    previous_close=115.67,
+                ),
+                "source": "Kite",
+                "status": "Updating",
+            },
+            "LARGECAP": {
+                "candle": Candle(
+                    timestamp=datetime(2026, 6, 8, 9, 35),
+                    symbol="LARGECAP",
+                    open=500,
+                    high=506,
+                    low=498,
+                    close=504,
+                    volume=900000,
+                    previous_close=500,
+                ),
+                "source": "Kite",
+                "status": "Updating",
+            },
+        }
+
+        setups = scan_explosive_movers(quotes, min_ltp=100, max_ltp=1000, top_n=5)
+
+        self.assertEqual(setups[0].symbol, "OCCLLTD")
+        self.assertGreaterEqual(setups[0].confidence_score, 70)
+        self.assertIn("Explosive Mover", setups[0].strategy)
+        self.assertGreaterEqual(setups[0].relative_volume, 1.2)
 
 
 if __name__ == "__main__":
