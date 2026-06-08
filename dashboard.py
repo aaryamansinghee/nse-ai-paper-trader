@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import os
 import sqlite3
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from paper_trading_simulator.engine import IntradaySimulator
 from paper_trading_simulator.logger import SQLiteTradeLogger
 from paper_trading_simulator.market_data import (
     HistoricalYahooNSEMarketDataProvider,
+    KiteQuoteSnapshotProvider,
     SimulatedNSEMarketDataProvider,
     YahooNSELiveQuoteMarketDataProvider,
 )
@@ -107,6 +109,39 @@ def load_latest_quotes(symbols: tuple[str, ...]):
                 "source": "Quote unavailable - not live",
             }
     return quotes
+
+
+def kite_credentials() -> tuple[str, str]:
+    api_key = os.environ.get("KITE_API_KEY", "")
+    access_token = os.environ.get("KITE_ACCESS_TOKEN", "")
+    try:
+        api_key = st.secrets.get("KITE_API_KEY", api_key)
+        access_token = st.secrets.get("KITE_ACCESS_TOKEN", access_token)
+    except Exception:
+        pass
+    return str(api_key or ""), str(access_token or "")
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_kite_market_quotes(
+    api_key: str,
+    access_token: str,
+    max_symbols: int,
+    price_min: float,
+    price_max: float,
+):
+    if not api_key or not access_token:
+        return {}, "Kite credentials missing"
+    try:
+        provider = KiteQuoteSnapshotProvider(api_key, access_token)
+        quotes = provider.fetch_market_snapshot(
+            max_symbols=max_symbols,
+            price_min=price_min,
+            price_max=price_max,
+        )
+        return quotes, f"Kite market-wide snapshot loaded {len(quotes)} price-filtered stocks"
+    except Exception as exc:
+        return {}, f"Kite snapshot failed: {type(exc).__name__}: {exc}"
 
 
 def reset_live_paper_state() -> None:
@@ -377,6 +412,13 @@ scanner_mode = st.sidebar.selectbox(
     help="Uses volume, momentum, relative volume, sector strength, VWAP proxy, and intraday-high confirmation.",
 )
 volume_top_n = st.sidebar.slider("Opening watchlist stocks", min_value=5, max_value=20, value=12, step=1)
+market_data_source = st.sidebar.selectbox(
+    "Market data source",
+    ["Kite market-wide snapshot", "Yahoo liquid fallback"],
+    index=0,
+    help="Use Kite to scan a much larger NSE universe. Yahoo fallback scans only the built-in liquid universe.",
+)
+kite_max_symbols = st.sidebar.slider("Kite symbols to scan", min_value=100, max_value=1500, value=900, step=100)
 price_filter_min = st.sidebar.number_input("Minimum LTP", min_value=1, max_value=5000, value=100, step=25)
 price_filter_max = st.sidebar.number_input("Auto-add maximum LTP", min_value=1, max_value=10000, value=1000, step=25)
 include_manual_symbols = st.sidebar.checkbox(
@@ -421,8 +463,26 @@ score_rows = []
 watchlist_rows = []
 
 if scanner_mode == "Opening Momentum":
-    scan_symbols = list(dict.fromkeys(VOLUME_SCANNER_UNIVERSE + manual_symbols))
-    raw_quotes = load_latest_quotes(tuple(scan_symbols))
+    kite_message = ""
+    api_key, access_token = kite_credentials()
+    if market_data_source == "Kite market-wide snapshot":
+        raw_quotes, kite_message = load_kite_market_quotes(
+            api_key,
+            access_token,
+            kite_max_symbols,
+            float(price_filter_min),
+            float(price_filter_max),
+        )
+        scan_symbols = list(raw_quotes.keys())
+        if raw_quotes:
+            st.success(kite_message)
+        else:
+            st.warning(f"{kite_message}. Falling back to Yahoo liquid universe.")
+            scan_symbols = list(dict.fromkeys(VOLUME_SCANNER_UNIVERSE + manual_symbols))
+            raw_quotes = load_latest_quotes(tuple(scan_symbols))
+    else:
+        scan_symbols = list(dict.fromkeys(VOLUME_SCANNER_UNIVERSE + manual_symbols))
+        raw_quotes = load_latest_quotes(tuple(scan_symbols))
     scanner_quotes = {}
     for symbol, quote in raw_quotes.items():
         candle = quote["candle"]
@@ -446,9 +506,9 @@ if scanner_mode == "Opening Momentum":
     auto_added_symbols = [setup.symbol for setup in volume_setups]
     health_cols = st.columns(4)
     health_cols[0].metric("Scanner", "Opening Momentum")
-    health_cols[1].metric("Universe Checked", len(scan_symbols))
+    health_cols[1].metric("Universe Checked", len(raw_quotes))
     health_cols[2].metric("Opening Watchlist", len(volume_setups))
-    health_cols[3].metric("Trade Source", "Momentum only")
+    health_cols[3].metric("Data Source", "Kite" if market_data_source.startswith("Kite") and raw_quotes and not kite_message.startswith("Kite snapshot failed") else "Yahoo")
     st.success("Opening Momentum active. Paper trades are restricted to 9:20-9:40 trigger-confirmed rows only.")
 
     for setup in volume_setups:
