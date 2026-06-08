@@ -201,6 +201,7 @@ def scan_explosive_movers(
     min_ltp: float = 100,
     max_ltp: float = 1000,
     top_n: int = 12,
+    min_change_pct: float = 5.0,
 ) -> list[OpeningMomentumSetup]:
     """Find OCCLLTD-style opening movers that absolute-volume ranking can miss."""
     candidates = _candidate_rows(quotes, min_ltp, max_ltp)
@@ -210,7 +211,7 @@ def scan_explosive_movers(
         change_pct = row["change_pct"] or 0
         traded_value_lakh = (candle.close * candle.volume) / 100000
         day_high_distance_pct = ((candle.high - candle.close) / candle.close) * 100 if candle.close else 100
-        if change_pct < 2:
+        if change_pct < min_change_pct:
             continue
         if row["relative_volume"] < 0.7:
             continue
