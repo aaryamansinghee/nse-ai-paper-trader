@@ -66,6 +66,20 @@ class AnnouncementProviderTests(unittest.TestCase):
         self.assertEqual(announcements[0].company, "Le Travenues Technology Limited")
         self.assertEqual(announcements[0].headline, "General Updates")
 
+    def test_manual_csv_parses_nse_event_subject_column(self):
+        csv_text = (
+            "CF-REG30-equities-06-Jun-2026\n"
+            "SYMBOL,COMPANY NAME,EVENT/SUBJECT,TYPE OF SUBMISSION,BROADCAST DATE/TIME\n"
+            "AMBER,AMBER ENTERPRISES INDIA LIMITED,Acquisition of to be incorporated companies-XBRL,Original,06-Jun-2026 23:22:35\n"
+        )
+
+        announcements = parse_announcement_csv(csv_text)
+
+        self.assertEqual(len(announcements), 1)
+        self.assertEqual(announcements[0].symbol, "AMBER")
+        self.assertIn("Acquisition", announcements[0].headline)
+        self.assertEqual(announcements[0].details, "Original")
+
     def test_manual_provider_merges_multiple_csv_files(self):
         csv_one = "SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME\nABC,ABC Limited,ABC wins order,Large order,08-Jun-2026 09:20:00\n"
         csv_two = "SYMBOL,COMPANY NAME,SUBJECT,DETAILS,BROADCAST DATE/TIME\nXYZ,XYZ Limited,XYZ receives approval,Approval received,08-Jun-2026 09:25:00\n"
