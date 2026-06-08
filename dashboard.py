@@ -7,8 +7,6 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from paper_trading_simulator.announcement_quality import classify_announcement_quality
-from paper_trading_simulator.announcements import build_announcement_provider, symbols_from_announcements
 from paper_trading_simulator.config import TradingConfig
 from paper_trading_simulator.engine import IntradaySimulator
 from paper_trading_simulator.logger import SQLiteTradeLogger
@@ -18,8 +16,7 @@ from paper_trading_simulator.market_data import (
     YahooNSELiveQuoteMarketDataProvider,
 )
 from paper_trading_simulator.live_paper import LivePaperTrader
-from paper_trading_simulator.scoring import score_trade_setup
-from paper_trading_simulator.sentiment import classify_sentiment
+from paper_trading_simulator.volume_scanner import VOLUME_SCANNER_UNIVERSE, scan_volume_setups, sector_leaders_from_quotes
 
 
 st.set_page_config(page_title="NSE AI Paper Trader", layout="wide")
@@ -364,8 +361,8 @@ def read_table(table_name: str) -> pd.DataFrame:
             return pd.DataFrame()
 
 
-st.title("NSE AI Paper Trader V1.1")
-st.caption("Auto-refresh watchlist, pluggable announcement providers, sentiment, and paper-only trade scoring. No real orders.")
+st.title("NSE AI Paper Trader V1.3")
+st.caption("Opening Momentum Strategy, paper-only execution, and risk-controlled fake trading. No real orders.")
 
 auto_refresh = st.sidebar.checkbox("Auto-refresh watchlist", value=True)
 refresh_seconds = st.sidebar.slider("Refresh seconds", min_value=5, max_value=60, value=10, step=5)
@@ -373,54 +370,19 @@ if auto_refresh:
     components.html(f"<meta http-equiv='refresh' content='{refresh_seconds}'>", height=0)
 
 st.sidebar.markdown("### Watchlist Settings")
-announcement_days = st.sidebar.slider("Announcement lookback days", min_value=1, max_value=10, value=2)
-max_announcements = st.sidebar.slider("Max announcements", min_value=5, max_value=200, value=50, step=5)
-provider_mode_label = st.sidebar.selectbox(
-    "Announcement source",
-    [
-        "Auto fallback",
-        "NSE only",
-        "Manual upload",
-        "RSS/news",
-        "Broker",
-        "Mock testing",
-    ],
+scanner_mode = st.sidebar.selectbox(
+    "Primary scanner",
+    ["Opening Momentum"],
     index=0,
+    help="Uses volume, momentum, relative volume, sector strength, VWAP proxy, and intraday-high confirmation.",
 )
-provider_mode = {
-    "Auto fallback": "auto",
-    "NSE only": "nse",
-    "Manual upload": "manual",
-    "RSS/news": "rss",
-    "Broker": "broker",
-    "Mock testing": "mock",
-}[provider_mode_label]
-uploaded_announcements = st.sidebar.file_uploader(
-    "Manual announcements CSV files",
-    type=["csv"],
-    accept_multiple_files=True,
-    help="Upload one or many NSE sub-segment CSV files. Columns can include symbol, company, headline, details, date/time, link.",
-)
-manual_csv_texts: tuple[str, ...] = tuple(
-    file.getvalue().decode("utf-8", errors="ignore") for file in uploaded_announcements
-)
-if uploaded_announcements:
-    st.sidebar.caption(f"{len(uploaded_announcements)} announcement CSV file(s) selected.")
-    if provider_mode != "manual":
-        st.sidebar.warning("For CSV trading setup, change Announcement source to Manual upload.")
-rss_url_text = st.sidebar.text_area(
-    "RSS/news URLs",
-    value="",
-    help="Optional. Leave blank to use built-in Indian market RSS feeds. One URL per line.",
-)
-rss_urls = tuple(line.strip() for line in rss_url_text.splitlines() if line.strip())
-enable_mock_announcements = provider_mode == "mock"
-price_filter_min = st.sidebar.number_input("Auto-add minimum LTP", min_value=1, max_value=5000, value=200, step=25)
+volume_top_n = st.sidebar.slider("Opening watchlist stocks", min_value=5, max_value=20, value=12, step=1)
+price_filter_min = st.sidebar.number_input("Minimum LTP", min_value=1, max_value=5000, value=100, step=25)
 price_filter_max = st.sidebar.number_input("Auto-add maximum LTP", min_value=1, max_value=10000, value=1000, step=25)
 include_manual_symbols = st.sidebar.checkbox(
     "Include manual symbols",
     value=False,
-    help="Off by default. Auto-trading still only uses NSE announcement stocks.",
+    help="Off by default. Manual symbols are for viewing unless they pass the active scanner rules.",
 )
 manual_symbols_text = st.sidebar.text_area(
     "Manual symbols for viewing only",
@@ -444,130 +406,181 @@ if st.session_state.get("live_paper_day") != datetime.now(ZoneInfo("Asia/Kolkata
     st.session_state.live_paper_day = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
 
 st.info(
-    "This is the auto-refresh watchlist. It reloads announcement providers and quote sources. "
-    "When the market is closed, rows show last-session data. If a provider is blocked, fallback sources are tried."
+    "Opening Momentum mode is active. The app creates the watchlist from volume gainers, price gainers, relative-volume leaders, "
+    "sector strength, and stocks near fresh intraday highs. NSE corporate announcements are not used."
 )
 
 if price_filter_min > price_filter_max:
     st.error("Auto-add minimum LTP must be lower than maximum LTP.")
     st.stop()
 
-announcement_result = load_announcement_result(
-    announcement_days,
-    max_announcements,
-    provider_mode,
-    manual_csv_texts,
-    rss_urls,
-    enable_mock_announcements,
-)
-announcements = announcement_result.announcements
-health_cols = st.columns(4)
-health_cols[0].metric("Source Used", announcement_result.source_used)
-last_success = announcement_result.last_successful_fetch.strftime("%H:%M:%S") if announcement_result.last_successful_fetch else "None"
-health_cols[1].metric("Last Successful Fetch", last_success)
-health_cols[2].metric("Number of Announcements", len(announcements))
-health_cols[3].metric("Provider Status", "OK" if announcement_result.ok else "FALLBACK NEEDED")
-if announcement_result.ok:
-    st.success(announcement_result.message)
-else:
-    st.warning(announcement_result.message)
-    st.caption(
-        "If NSE returns 403 on Streamlit Cloud, the app will try configured fallback providers. "
-        "Use manual CSV, RSS/news, broker data, or mock testing mode instead of relying only on direct NSE access."
-    )
-if announcement_result.provider_statuses:
-    provider_status_df = pd.DataFrame(
-        [
-            {
-                "provider": status.provider,
-                "status": "OK" if status.ok else "FAILED",
-                "rows": status.rows,
-                "message": status.message,
-                "fetched_at": status.fetched_at.strftime("%Y-%m-%d %H:%M:%S"),
-                "source": status.source_url,
-            }
-            for status in announcement_result.provider_statuses
-        ]
-    )
-    with st.expander("Provider status details", expanded=not announcement_result.ok):
-        st.dataframe(provider_status_df, use_container_width=True, hide_index=True)
-if not announcements:
-    st.warning(
-        "No fresh announcements were fetched from the selected provider chain. "
-        "Use manual CSV upload or mock testing mode to verify the rest of the paper-trading pipeline."
-    )
-announcement_symbols = symbols_from_announcements(announcements)
 manual_symbols = [item.strip().upper() for item in manual_symbols_text.split(",") if item.strip()] if include_manual_symbols else []
-announcement_quotes = load_latest_quotes(tuple(announcement_symbols))
-
 announcement_feed_rows = []
 auto_added_symbols = []
-for announcement in announcements:
-    quote = announcement_quotes.get(announcement.symbol)
-    candle = quote["candle"] if quote else None
-    quote_source = quote["source"] if quote else "No quote"
-    change, change_pct = price_change(candle)
-    sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
-    quality = classify_announcement_quality(announcement.headline, announcement.details)
-    has_trusted_price = candle is not None and quote_source == "Yahoo Finance NSE (.NS)"
-    price_is_in_range = bool(candle and price_filter_min <= candle.close <= price_filter_max)
-    auto_added = has_trusted_price and price_is_in_range
-    if auto_added and announcement.symbol not in auto_added_symbols:
-        auto_added_symbols.append(announcement.symbol)
-    if not has_trusted_price:
-        filter_reason = "Not auto-added: trusted quote unavailable"
-    elif not price_is_in_range:
-        filter_reason = f"Not auto-added: LTP outside Rs. {price_filter_min}-{price_filter_max}"
-    else:
-        filter_reason = "Auto-added from NSE announcement"
-    announcement_feed_rows.append(
-        {
-            "time": announcement.published_at,
-            "stock": announcement.symbol,
-            "company": announcement.company,
-            "latest NSE announcement": announcement.headline,
-            "sentiment": sentiment.label,
-            "announcement category": quality.category,
-            "quality score": quality.quality_score,
-            "preferred strategy": quality.preferred_strategy,
-            "LTP": candle.close if candle else None,
-            "change %": change_pct,
-            "auto-added": "YES" if auto_added else "NO",
-            "reason": filter_reason,
-            "quote status": quote_status(candle.timestamp, candle.volume, quote_source) if candle else "No quote",
-            "source": announcement.source,
-        }
-    )
-
-watchlist_symbols = list(dict.fromkeys(auto_added_symbols + manual_symbols))
-quotes = load_latest_quotes(tuple(watchlist_symbols))
-
 score_rows = []
-for announcement in announcements:
-    sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
-    quote = announcement_quotes.get(announcement.symbol)
-    candle = quote["candle"] if quote else None
-    quote_source = quote["source"] if quote else "No quote"
-    score = score_trade_setup(announcement, sentiment, candle, config.target_reward_multiple)
-    change, change_pct = price_change(candle)
-    is_auto_added = announcement.symbol in auto_added_symbols
-    ai_decision, ai_reason = ai_intraday_decision(score, candle, quote_source, is_auto_added)
-    score_rows.append(
-        {
-            "stock": score.symbol,
-            "latest news": score.latest_news,
-            "sentiment": score.sentiment,
-            "announcement category": score.announcement_category,
-            "quality score": score.announcement_quality_score,
-            "preferred strategy": score.preferred_strategy,
-            "announcement eligible": "YES" if is_auto_added else "NO",
-            "AI decision": ai_decision,
-            "LTP": score.ltp,
-            "previous close": candle.previous_close if candle else None,
-            "change %": change_pct,
-            "trigger price": score.trigger_price,
-            "stop loss": score.stop_loss,
-            "target": score.target,
+watchlist_rows = []
+
+if scanner_mode == "Opening Momentum":
+    scan_symbols = list(dict.fromkeys(VOLUME_SCANNER_UNIVERSE + manual_symbols))
+    raw_quotes = load_latest_quotes(tuple(scan_symbols))
+    scanner_quotes = {}
+    for symbol, quote in raw_quotes.items():
+        candle = quote["candle"]
+        source = quote["source"]
+        scanner_quotes[symbol] = {
+            "candle": candle,
+            "source": source,
+            "status": quote_status(candle.timestamp, candle.volume, source) if candle else "No quote",
+        }
+    volume_setups = scan_volume_setups(
+        scanner_quotes,
+        min_ltp=price_filter_min,
+        max_ltp=price_filter_max,
+        top_n=volume_top_n,
+    )
+    sector_leader_rows = sector_leaders_from_quotes(
+        scanner_quotes,
+        min_ltp=price_filter_min,
+        max_ltp=price_filter_max,
+    )
+    auto_added_symbols = [setup.symbol for setup in volume_setups]
+    health_cols = st.columns(4)
+    health_cols[0].metric("Scanner", "Opening Momentum")
+    health_cols[1].metric("Universe Checked", len(scan_symbols))
+    health_cols[2].metric("Opening Watchlist", len(volume_setups))
+    health_cols[3].metric("Trade Source", "Momentum only")
+    st.success("Opening Momentum active. Paper trades are restricted to 9:20-9:40 trigger-confirmed rows only.")
+
+    for setup in volume_setups:
+        watchlist_rows.append(
+            {
+                "stock": setup.symbol,
+                "sector": setup.sector,
+                "LTP": setup.ltp,
+                "previous close": setup.previous_close,
+                "change": setup.change,
+                "change %": setup.change_pct,
+                "day high": setup.day_high,
+                "day low": setup.day_low,
+                "volume": setup.volume,
+                "relative volume": setup.relative_volume,
+                "timestamp": setup.timestamp,
+                "status": setup.quote_status,
+                "quote source": setup.quote_source,
+                "latest news": setup.strategy,
+            }
+        )
+        score_rows.append(
+            {
+                "stock": setup.symbol,
+                "latest news": "Opening momentum setup",
+                "sentiment": "positive" if (setup.change_pct or 0) > 0 else "neutral",
+                "announcement category": "opening momentum",
+                "quality score": setup.confidence_score,
+                "preferred strategy": setup.strategy,
+                "announcement eligible": "YES",
+                "AI decision": setup.ai_decision,
+                "LTP": setup.ltp,
+                "previous close": setup.previous_close,
+                "change %": setup.change_pct,
+                "relative volume": setup.relative_volume,
+                "trigger price": setup.trigger_price,
+                "stop loss": setup.stop_loss,
+                "target": setup.target,
+                "signal": setup.signal,
+                "confidence score": setup.confidence_score,
+                "RVOL pts": setup.relative_volume_score,
+                "momentum pts": setup.price_momentum_score,
+                "ORB pts": setup.opening_breakout_score,
+                "sector pts": setup.sector_score,
+                "VWAP pts": setup.vwap_score,
+                "high-distance pts": setup.day_high_distance_score,
+                "liquidity pts": setup.liquidity_score,
+                "reason for trade": setup.reason,
+                "quote status": setup.quote_status,
+                "quote source": setup.quote_source,
+                "news source": "Opening Momentum",
+            }
+        )
+else:
+    announcement_result = load_announcement_result(
+        announcement_days,
+        max_announcements,
+        provider_mode,
+        manual_csv_texts,
+        rss_urls,
+        enable_mock_announcements,
+    )
+    announcements = announcement_result.announcements
+    health_cols = st.columns(4)
+    health_cols[0].metric("Source Used", announcement_result.source_used)
+    last_success = announcement_result.last_successful_fetch.strftime("%H:%M:%S") if announcement_result.last_successful_fetch else "None"
+    health_cols[1].metric("Last Successful Fetch", last_success)
+    health_cols[2].metric("Number of Announcements", len(announcements))
+    health_cols[3].metric("Provider Status", "OK" if announcement_result.ok else "FALLBACK NEEDED")
+    if announcement_result.ok:
+        st.success(announcement_result.message)
+    else:
+        st.warning(announcement_result.message)
+    announcement_symbols = symbols_from_announcements(announcements)
+    announcement_quotes = load_latest_quotes(tuple(announcement_symbols))
+    for announcement in announcements:
+        quote = announcement_quotes.get(announcement.symbol)
+        candle = quote["candle"] if quote else None
+        quote_source = quote["source"] if quote else "No quote"
+        change, change_pct = price_change(candle)
+        sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
+        quality = classify_announcement_quality(announcement.headline, announcement.details)
+        has_trusted_price = candle is not None and quote_source == "Yahoo Finance NSE (.NS)"
+        price_is_in_range = bool(candle and price_filter_min <= candle.close <= price_filter_max)
+        auto_added = has_trusted_price and price_is_in_range
+        if auto_added and announcement.symbol not in auto_added_symbols:
+            auto_added_symbols.append(announcement.symbol)
+        announcement_feed_rows.append(
+            {
+                "time": announcement.published_at,
+                "stock": announcement.symbol,
+                "company": announcement.company,
+                "latest NSE announcement": announcement.headline,
+                "sentiment": sentiment.label,
+                "announcement category": quality.category,
+                "quality score": quality.quality_score,
+                "preferred strategy": quality.preferred_strategy,
+                "LTP": candle.close if candle else None,
+                "change %": change_pct,
+                "auto-added": "YES" if auto_added else "NO",
+                "reason": "Auto-added from announcement" if auto_added else "Not auto-added",
+                "quote status": quote_status(candle.timestamp, candle.volume, quote_source) if candle else "No quote",
+                "source": announcement.source,
+            }
+        )
+    watchlist_symbols = list(dict.fromkeys(auto_added_symbols + manual_symbols))
+    quotes = load_latest_quotes(tuple(watchlist_symbols))
+    for announcement in announcements:
+        sentiment = classify_sentiment(f"{announcement.headline} {announcement.details}")
+        quote = announcement_quotes.get(announcement.symbol)
+        candle = quote["candle"] if quote else None
+        quote_source = quote["source"] if quote else "No quote"
+        score = score_trade_setup(announcement, sentiment, candle, config.target_reward_multiple)
+        change, change_pct = price_change(candle)
+        is_auto_added = announcement.symbol in auto_added_symbols
+        ai_decision, ai_reason = ai_intraday_decision(score, candle, quote_source, is_auto_added)
+        score_rows.append(
+            {
+                "stock": score.symbol,
+                "latest news": score.latest_news,
+                "sentiment": score.sentiment,
+                "announcement category": score.announcement_category,
+                "quality score": score.announcement_quality_score,
+                "preferred strategy": score.preferred_strategy,
+                "announcement eligible": "YES" if is_auto_added else "NO",
+                "AI decision": ai_decision,
+                "LTP": score.ltp,
+                "previous close": candle.previous_close if candle else None,
+                "change %": change_pct,
+                "trigger price": score.trigger_price,
+                "stop loss": score.stop_loss,
+                "target": score.target,
                 "signal": score.signal,
                 "confidence score": score.confidence_score,
                 "catalyst pts": score.catalyst_points,
@@ -578,35 +591,35 @@ for announcement in announcements:
                 "reason for trade": f"{ai_reason}; {score.reason_for_trade}",
                 "quote status": quote_status(candle.timestamp, candle.volume, quote_source) if candle else "No quote",
                 "quote source": quote_source,
-            "news source": score.source,
-        }
-    )
+                "news source": score.source,
+            }
+        )
+    for symbol in watchlist_symbols:
+        quote = quotes.get(symbol)
+        candle = quote["candle"] if quote else None
+        quote_source = quote["source"] if quote else "Quote unavailable - not live"
+        if candle is None:
+            continue
+        related_news = [item.headline for item in announcements if item.symbol == symbol]
+        change, change_pct = price_change(candle)
+        watchlist_rows.append(
+            {
+                "stock": symbol,
+                "LTP": candle.close,
+                "previous close": candle.previous_close,
+                "change": change,
+                "change %": change_pct,
+                "day high": candle.high,
+                "day low": candle.low,
+                "volume": candle.volume,
+                "timestamp": candle.timestamp,
+                "status": quote_status(candle.timestamp, candle.volume, quote_source),
+                "quote source": quote_source,
+                "latest news": related_news[0] if related_news else "No recent announcement found",
+            }
+        )
 
-watchlist_rows = []
-for symbol in watchlist_symbols:
-    quote = quotes.get(symbol)
-    candle = quote["candle"] if quote else None
-    quote_source = quote["source"] if quote else "Quote unavailable - not live"
-    if candle is None:
-        continue
-    related_news = [item.headline for item in announcements if item.symbol == symbol]
-    change, change_pct = price_change(candle)
-    watchlist_rows.append(
-        {
-            "stock": symbol,
-            "LTP": candle.close,
-            "previous close": candle.previous_close,
-            "change": change,
-            "change %": change_pct,
-            "day high": candle.high,
-            "day low": candle.low,
-            "volume": candle.volume,
-            "timestamp": candle.timestamp,
-            "status": quote_status(candle.timestamp, candle.volume, quote_source),
-            "quote source": quote_source,
-            "latest news": related_news[0] if related_news else "No recent announcement found",
-        }
-    )
+watchlist_symbols = [row["stock"] for row in watchlist_rows]
 
 watchlist_df = pd.DataFrame(watchlist_rows)
 score_df = pd.DataFrame(score_rows)
@@ -631,27 +644,46 @@ with top_right:
     buy_watch_count = sum(1 for row in score_rows if row["signal"] == "BUY WATCH")
     st.metric("BUY WATCH signals", buy_watch_count)
 
-st.subheader("Live Corporate Announcement Feed")
-st.caption(
-    f"The dashboard refreshes automatically, but RSS/news counts change only when source feeds publish new items. "
-    f"Announcement stocks are auto-added only when trusted LTP is between Rs. {price_filter_min} and Rs. {price_filter_max}. "
-    "Manual symbols are off by default and are for viewing only."
-)
-announcement_feed_df = pd.DataFrame(announcement_feed_rows)
-feed_col_1, feed_col_2, feed_col_3 = st.columns(3)
-feed_col_1.metric("Announcements scanned", len(announcement_feed_rows))
-feed_col_2.metric("Auto-added stocks", len(auto_added_symbols))
-feed_col_3.metric("Price filter", f"Rs. {price_filter_min}-{price_filter_max}")
-st.dataframe(style_announcement_feed(announcement_feed_df), use_container_width=True)
+if scanner_mode == "Opening Momentum":
+    st.subheader("Opening Momentum Scanner")
+    st.caption(
+        "Ranks stocks using top volume, top price gainers, relative volume, sector confirmation, VWAP strength, "
+        "opening breakout, and distance from day high. NSE announcements are not used."
+    )
+    volume_cols = st.columns(3)
+    volume_cols[0].metric("Stocks scanned", len(VOLUME_SCANNER_UNIVERSE))
+    volume_cols[1].metric("Opening watchlist", len(auto_added_symbols))
+    volume_cols[2].metric("Price filter", f"Rs. {price_filter_min}-{price_filter_max}")
+    st.markdown("#### Sector Leaders")
+    st.dataframe(pd.DataFrame(sector_leader_rows), use_container_width=True, hide_index=True)
+else:
+    st.subheader("Live Corporate Announcement Feed")
+    st.caption(
+        f"The dashboard refreshes automatically, but RSS/news counts change only when source feeds publish new items. "
+        f"Announcement stocks are auto-added only when trusted LTP is between Rs. {price_filter_min} and Rs. {price_filter_max}. "
+        "Manual symbols are off by default and are for viewing only."
+    )
+    announcement_feed_df = pd.DataFrame(announcement_feed_rows)
+    feed_col_1, feed_col_2, feed_col_3 = st.columns(3)
+    feed_col_1.metric("Announcements scanned", len(announcement_feed_rows))
+    feed_col_2.metric("Auto-added stocks", len(auto_added_symbols))
+    feed_col_3.metric("Price filter", f"Rs. {price_filter_min}-{price_filter_max}")
+    st.dataframe(style_announcement_feed(announcement_feed_df), use_container_width=True)
 
 st.subheader("Live Auto-Refresh Watchlist")
 st.dataframe(style_watchlist(watchlist_df), use_container_width=True)
 
 st.subheader("AI Strategy Scoring")
-st.caption(
-    "Auto paper-trading is restricted to TRADE_READY rows only. These must be positive NSE announcement stocks, "
-    "auto-added by the Rs. 200-Rs. 1,000 filter, with trusted quotes and trigger confirmation."
-)
+if scanner_mode == "Opening Momentum":
+    st.caption(
+        "Auto paper-trading is restricted to TRADE_READY rows only. No entries before 9:20 AM, no fresh entries after 9:40 AM, "
+        "and every open paper position exits by 9:45 AM."
+    )
+else:
+    st.caption(
+        "Auto paper-trading is restricted to TRADE_READY rows only. These must be positive NSE announcement stocks, "
+        "auto-added by the Rs. 200-Rs. 1,000 filter, with trusted quotes and trigger confirmation."
+    )
 st.dataframe(style_scores(score_df), use_container_width=True)
 
 st.subheader("Live Paper Trading Engine")
@@ -666,10 +698,11 @@ paper_cols[0].metric("Fake capital", "Rs. 1,00,000")
 paper_cols[1].metric("Fake cash", f"Rs. {live_state.cash:,.2f}")
 paper_cols[2].metric("Realized P&L", f"Rs. {live_state.realized_pnl():,.2f}")
 paper_cols[3].metric("Unrealized P&L", f"Rs. {live_state.unrealized_pnl():,.2f}")
-paper_cols[4].metric("Trades used", f"{live_state.trades_taken}/5")
+paper_cols[4].metric("Trades used", f"{live_state.trades_taken}/3")
 st.caption(
-    f"Status: {status_text}. Trading window: 9:15 AM to 3:30 PM IST. "
-    "Force square-off: 3:20 PM IST. Daily target: Rs. 2,500. Max daily loss: Rs. 1,200."
+    f"Status: {status_text}. Opening Momentum fake entries: 9:20 AM to 9:40 AM IST only. "
+    "Any open fake position is exited at 9:45 AM IST. "
+    "Backup force square-off: 3:20 PM IST. Daily target: Rs. 2,500. Max daily loss: Rs. 1,000."
 )
 
 position_df = positions_frame(live_state)
@@ -751,7 +784,7 @@ with st.expander("Backtest with actual historical NSE prices", expanded=True):
         backtest_symbol_options = auto_added_symbols
         backtest_defaults = auto_added_symbols[:5]
         backtest_symbols = st.multiselect(
-            "Backtest auto-added announcement stocks only",
+            "Backtest current scanner watchlist only",
             backtest_symbol_options,
             default=backtest_defaults,
             key="historical_backtest_symbols",
@@ -773,7 +806,7 @@ with st.expander("Backtest with actual historical NSE prices", expanded=True):
 
     if run_backtest:
         if not backtest_symbols:
-            st.warning("No eligible NSE announcement stocks are available for backtesting yet.")
+            st.warning("No eligible scanner stocks are available for backtesting yet.")
         elif pd.Timestamp(backtest_day).weekday() >= 5:
             st.error(f"{backtest_day.strftime('%B %d, %Y')} is a weekend. NSE cash equity was closed.")
         else:
