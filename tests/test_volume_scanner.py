@@ -123,6 +123,31 @@ class VolumeScannerTests(unittest.TestCase):
         self.assertIn("Explosive Mover", setups[0].strategy)
         self.assertGreaterEqual(setups[0].relative_volume, 1.2)
 
+    def test_explosive_mover_lane_captures_early_two_percent_move(self):
+        quotes = {
+            "EARLYRUN": {
+                "candle": Candle(
+                    timestamp=datetime(2026, 6, 8, 9, 22),
+                    symbol="EARLYRUN",
+                    open=205.0,
+                    high=211.0,
+                    low=204.5,
+                    close=210.2,
+                    volume=180000,
+                    previous_close=205.4,
+                ),
+                "source": "Kite",
+                "status": "Updating",
+            },
+        }
+
+        setups = scan_explosive_movers(quotes, min_ltp=100, max_ltp=1000, top_n=5)
+
+        self.assertEqual(setups[0].symbol, "EARLYRUN")
+        self.assertGreaterEqual(setups[0].change_pct, 2)
+        self.assertGreaterEqual(setups[0].confidence_score, 58)
+        self.assertIn(setups[0].ai_decision, {"WAIT", "WAIT_FOR_TRIGGER", "TRADE_READY"})
+
 
 if __name__ == "__main__":
     unittest.main()
