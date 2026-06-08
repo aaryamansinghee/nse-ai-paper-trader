@@ -74,6 +74,11 @@ class LivePaperTrader:
             state.stopped_reason = "Force square-off completed at 3:20 PM IST"
             return state
 
+        if now.time() >= self.config.opening_window_square_off_time:
+            self._square_off_all(state, prices, now, "OPENING_WINDOW_EXIT_9_45_AM")
+            self._log_once(state, "OPENING_WINDOW_CLOSED", "Opening-volume paper trading window closed at 9:45 AM IST")
+            return state
+
         if not self._inside_market_hours(now.time()):
             self._log_once(state, "SYSTEM", "Waiting for NSE cash market hours: 9:15 AM to 3:30 PM IST")
             return state
@@ -113,17 +118,14 @@ class LivePaperTrader:
         if quote_status != "Updating":
             self._log_rejection(state, symbol, f"Rejected: quote status is not live/updating ({quote_status})", now)
             return
-        if now.time() > time(14, 30):
-            self._log_rejection(state, symbol, "Rejected: no fresh entries after 2:30 PM IST", now)
+        if now.time() < self.config.first_entry_time:
+            self._log_rejection(state, symbol, "Rejected: no fake entries before 9:20 AM IST", now)
+            return
+        if now.time() > self.config.last_entry_time:
+            self._log_rejection(state, symbol, "Rejected: fresh opening-window entries allowed only from 9:15 AM to 9:40 AM IST", now)
             return
         if ltp <= 0 or trigger <= 0 or stop_loss <= 0 or target <= 0:
             self._log_rejection(state, symbol, "Rejected: invalid price, trigger, stop loss, or target", now)
-            return
-        if stop_loss >= ltp:
-            self._log_rejection(state, symbol, "Rejected: stop loss must be below entry price", now)
-            return
-        if target <= ltp:
-            self._log_rejection(state, symbol, "Rejected: target must be above entry price", now)
             return
         if symbol in state.positions:
             return
@@ -134,9 +136,15 @@ class LivePaperTrader:
             self._log_rejection(state, symbol, "Rejected: max 2 open paper positions reached", now)
             return
         if state.trades_taken >= self.config.max_trades_per_day:
-            self._log_rejection(state, symbol, "Rejected: max 5 paper trades reached", now)
+            self._log_rejection(state, symbol, "Rejected: max 3 paper trades reached", now)
             return
         if ltp < trigger:
+            return
+        if stop_loss >= ltp:
+            self._log_rejection(state, symbol, "Rejected: stop loss must be below fake entry price", now)
+            return
+        if target <= ltp:
+            self._log_rejection(state, symbol, "Rejected: target must be above fake entry price", now)
             return
         risk_per_share = max(ltp - stop_loss, ltp * self.config.min_stop_loss_pct)
         quantity_by_risk = int(self.config.max_loss_per_trade // risk_per_share)
@@ -213,7 +221,7 @@ class LivePaperTrader:
         if pnl <= -self.config.max_daily_loss:
             return f"Max daily fake loss reached: Rs. {pnl:.2f}"
         if state.trades_taken >= self.config.max_trades_per_day:
-            return "Max 5 paper trades reached"
+            return "Max 3 paper trades reached"
         return None
 
     def _inside_market_hours(self, current_time: time) -> bool:
