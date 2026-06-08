@@ -7,7 +7,7 @@ class TradingConfig:
     fake_capital: float = 100000.0
     daily_profit_target: float = 2500.0
     max_daily_loss: float = 1000.0
-    min_stop_loss_pct: float = 0.005
+    min_stop_loss_pct: float = 0.0025
     max_stop_loss_pct: float = 0.005
     max_loss_per_trade: float = 400.0
     max_trades_per_day: int = 3

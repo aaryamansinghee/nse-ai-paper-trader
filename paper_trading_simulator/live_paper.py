@@ -149,7 +149,9 @@ class LivePaperTrader:
         risk_per_share = max(ltp - stop_loss, ltp * self.config.min_stop_loss_pct)
         quantity_by_risk = int(self.config.max_loss_per_trade // risk_per_share)
         quantity_by_cash = int(state.cash // ltp)
-        quantity = max(0, min(quantity_by_risk, quantity_by_cash))
+        capital_cap = self._capital_cap_for_trade(row, ltp)
+        quantity_by_cap = int(capital_cap // ltp)
+        quantity = max(0, min(quantity_by_risk, quantity_by_cash, quantity_by_cap))
         if quantity < 1:
             self._log_rejection(state, symbol, "Rejected: not enough fake cash for risk-controlled quantity", now)
             return
@@ -172,11 +174,28 @@ class LivePaperTrader:
             now,
             "FAKE_BUY",
             symbol,
-            f"Fake buy executed at Rs. {ltp:.2f}. AI waited for trigger Rs. {trigger:.2f}. Reason: {row.get('reason for trade', '')}",
+            f"Fake buy executed at Rs. {ltp:.2f}. Deployed about Rs. {quantity * ltp:,.2f} "
+            f"against capital cap Rs. {capital_cap:,.2f}. AI waited for trigger Rs. {trigger:.2f}. "
+            f"Reason: {row.get('reason for trade', '')}",
             ltp,
             quantity,
             None,
         )
+
+    @staticmethod
+    def _capital_cap_for_trade(row: dict, entry_price: float) -> float:
+        target = float(row.get("target") or 0)
+        confidence = int(row.get("confidence score") or 0)
+        if entry_price <= 0 or target <= entry_price:
+            return 20000.0
+        target_pct = (target - entry_price) / entry_price
+        if target_pct >= 0.15:
+            return 40000.0 if confidence >= 88 else 35000.0
+        if target_pct >= 0.10:
+            return 35000.0
+        if target_pct >= 0.05:
+            return 25000.0
+        return 20000.0
 
     def _mark_positions(self, state: LivePaperState, prices: dict[str, float]) -> None:
         for symbol, position in state.positions.items():

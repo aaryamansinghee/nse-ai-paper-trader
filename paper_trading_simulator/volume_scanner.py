@@ -321,7 +321,7 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
 
     strategy = _preferred_strategy(relative_volume_score, opening_breakout_score, vwap_score, explosive_boost)
     trigger = _entry_trigger(candle, confidence)
-    stop_loss = round(trigger * 0.995, 2)
+    stop_loss = round(trigger * (1 - _stop_loss_pct(row, confidence)), 2)
     target = _target_price(trigger, row, confidence)
     signal, ai_decision = _signal(confidence, candle.close, trigger)
 
@@ -331,7 +331,9 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
         f"opening breakout {opening_breakout_score}/16, sector {sector_score}/12, "
         f"VWAP strength {vwap_score}/12, day-high distance {day_high_distance_score}/10, "
         f"liquidity {liquidity_score}/10, explosive-mover boost {explosive_boost}. "
-        f"Momentum target is {round((_target_pct(row, confidence) * 100), 1)}%. Enter only after trigger confirmation."
+        f"Stop is {round((_stop_loss_pct(row, confidence) * 100), 2)}%; "
+        f"momentum target is {round((_target_pct(row, confidence) * 100), 1)}%. "
+        "Enter only after trigger confirmation."
     )
     return OpeningMomentumSetup(
         symbol=symbol,
@@ -547,6 +549,15 @@ def _entry_trigger(candle: Candle, confidence: int) -> float:
 
 def _target_price(trigger: float, row: dict, confidence: int) -> float:
     return round(trigger * (1 + _target_pct(row, confidence)), 2)
+
+
+def _stop_loss_pct(row: dict, confidence: int) -> float:
+    explosive_boost = row.get("explosive_boost", 0)
+    if explosive_boost >= 18:
+        return 0.0025
+    if explosive_boost >= 12 and confidence >= 75:
+        return 0.0025
+    return 0.005
 
 
 def _target_pct(row: dict, confidence: int) -> float:
