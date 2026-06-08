@@ -18,12 +18,16 @@ from paper_trading_simulator.market_data import (
     YahooNSELiveQuoteMarketDataProvider,
 )
 from paper_trading_simulator.live_paper import LivePaperTrader
-from paper_trading_simulator.volume_scanner import (
-    VOLUME_SCANNER_UNIVERSE,
-    scan_explosive_movers,
-    scan_volume_setups,
-    sector_leaders_from_quotes,
-)
+from paper_trading_simulator.volume_scanner import VOLUME_SCANNER_UNIVERSE, scan_volume_setups, sector_leaders_from_quotes
+
+try:
+    from paper_trading_simulator.volume_scanner import scan_explosive_movers
+    EXPLOSIVE_SCANNER_AVAILABLE = True
+except ImportError:
+    EXPLOSIVE_SCANNER_AVAILABLE = False
+
+    def scan_explosive_movers(*args, **kwargs):
+        return []
 
 
 st.set_page_config(page_title="NSE AI Paper Trader", layout="wide")
@@ -737,6 +741,8 @@ if scanner_mode == "Opening Momentum":
     volume_cols[1].metric("Opening watchlist", len(auto_added_symbols))
     volume_cols[2].metric("Price filter", f"Rs. {price_filter_min}-{price_filter_max}")
     st.markdown("#### Explosive Movers")
+    if not EXPLOSIVE_SCANNER_AVAILABLE:
+        st.error("Explosive Movers scanner is missing. Upload the latest paper_trading_simulator/volume_scanner.py to GitHub.")
     explosive_rows = [
         {
             "stock": setup.symbol,
