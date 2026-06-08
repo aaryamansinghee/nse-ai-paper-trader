@@ -612,6 +612,109 @@ class KiteLiveMarketDataProvider(LiveMarketDataProvider):
         )
 
 
+class KiteQuoteSnapshotProvider:
+    """Fetches batch Kite quote snapshots for market-wide opening momentum scanning."""
+
+    source_name = "Kite Connect quote snapshot"
+
+    def __init__(self, api_key: str, access_token: str, timeout_seconds: float = 15.0):
+        self.api_key = api_key
+        self.access_token = access_token
+        self.timeout_seconds = timeout_seconds
+
+    def is_configured(self) -> bool:
+        return bool(self.api_key and self.access_token)
+
+    def fetch_market_snapshot(
+        self,
+        max_symbols: int = 900,
+        exchange: str = "NSE",
+        price_min: float = 100,
+        price_max: float = 1000,
+    ) -> dict[str, dict]:
+        kite = self._kite()
+        symbols = self._equity_symbols(kite, exchange, max_symbols=max_symbols)
+        return self.fetch_latest_quotes(symbols, exchange=exchange, price_min=price_min, price_max=price_max)
+
+    def fetch_latest_quotes(
+        self,
+        symbols: Sequence[str],
+        exchange: str = "NSE",
+        price_min: float = 0,
+        price_max: float = 100000,
+    ) -> dict[str, dict]:
+        kite = self._kite()
+        clean_symbols = [symbol.upper().strip() for symbol in symbols if symbol.strip()]
+        output: dict[str, dict] = {}
+        for chunk in _chunks([f"{exchange}:{symbol}" for symbol in clean_symbols], 250):
+            payload = kite.quote(chunk)
+            for instrument, quote in payload.items():
+                symbol = instrument.split(":", 1)[-1].upper()
+                candle = self._quote_to_candle(symbol, quote)
+                if not candle:
+                    continue
+                if not (price_min <= candle.close <= price_max):
+                    continue
+                output[symbol] = {
+                    "candle": candle,
+                    "source": self.source_name,
+                }
+        return output
+
+    def _kite(self):
+        try:
+            from kiteconnect import KiteConnect
+        except ImportError as exc:
+            raise RuntimeError("Kite support is missing. Add kiteconnect to requirements.txt and redeploy.") from exc
+        kite = KiteConnect(api_key=self.api_key)
+        kite.set_access_token(self.access_token)
+        return kite
+
+    @staticmethod
+    def _equity_symbols(kite, exchange: str, max_symbols: int) -> list[str]:
+        instruments = kite.instruments(exchange)
+        symbols: list[str] = []
+        blocked_suffixes = ("-BE", "-BZ", "-SM", "-ST", "-SZ")
+        for instrument in instruments:
+            symbol = str(instrument.get("tradingsymbol") or "").upper().strip()
+            if not symbol:
+                continue
+            if instrument.get("instrument_type") != "EQ":
+                continue
+            if symbol.endswith(blocked_suffixes):
+                continue
+            symbols.append(symbol)
+            if len(symbols) >= max_symbols:
+                break
+        return symbols
+
+    @staticmethod
+    def _quote_to_candle(symbol: str, quote: dict) -> Candle | None:
+        last_price = quote.get("last_price")
+        if last_price in (None, 0):
+            return None
+        ohlc = quote.get("ohlc") or {}
+        timestamp = quote.get("timestamp") or quote.get("last_trade_time") or datetime.now()
+        if isinstance(timestamp, str):
+            timestamp = pd.Timestamp(timestamp).to_pydatetime()
+        volume = quote.get("volume") or quote.get("volume_traded") or 0
+        return Candle(
+            timestamp=timestamp.replace(second=0, microsecond=0),
+            symbol=symbol,
+            open=round(float(ohlc.get("open") or last_price), 2),
+            high=round(float(ohlc.get("high") or last_price), 2),
+            low=round(float(ohlc.get("low") or last_price), 2),
+            close=round(float(last_price), 2),
+            volume=int(volume or 0),
+            previous_close=round(float(ohlc.get("close")), 2) if ohlc.get("close") is not None else None,
+        )
+
+
+def _chunks(items: Sequence[str], size: int) -> Iterator[list[str]]:
+    for index in range(0, len(items), size):
+        yield list(items[index : index + size])
+
+
 def default_symbols() -> list[str]:
     return list(DEFAULT_SYMBOLS)
 
