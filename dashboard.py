@@ -421,13 +421,21 @@ scanner_mode = st.sidebar.selectbox(
     help="Uses volume, momentum, relative volume, sector strength, VWAP proxy, and intraday-high confirmation.",
 )
 volume_top_n = st.sidebar.slider("Opening watchlist stocks", min_value=5, max_value=20, value=12, step=1)
+explosive_top_n = st.sidebar.slider("Explosive movers shown", min_value=10, max_value=50, value=30, step=5)
 market_data_source = st.sidebar.selectbox(
     "Market data source",
     ["Kite market-wide snapshot", "Yahoo liquid fallback"],
     index=0,
     help="Use Kite to scan a much larger NSE universe. Yahoo fallback scans only the built-in liquid universe.",
 )
-kite_max_symbols = st.sidebar.slider("Kite symbols to scan", min_value=100, max_value=1500, value=900, step=100)
+kite_max_symbols = st.sidebar.slider(
+    "Kite symbols to scan",
+    min_value=0,
+    max_value=5000,
+    value=0,
+    step=250,
+    help="Keep 0 to scan the full Kite NSE cash-equity list. Use a smaller number only if Kite becomes slow.",
+)
 price_filter_min = st.sidebar.number_input("Minimum LTP", min_value=1, max_value=5000, value=100, step=25)
 price_filter_max = st.sidebar.number_input("Auto-add maximum LTP", min_value=1, max_value=10000, value=1000, step=25)
 include_manual_symbols = st.sidebar.checkbox(
@@ -511,7 +519,7 @@ if scanner_mode == "Opening Momentum":
         scanner_quotes,
         min_ltp=price_filter_min,
         max_ltp=price_filter_max,
-        top_n=volume_top_n,
+        top_n=explosive_top_n,
     )
     combined_setups = []
     seen_symbols = set()
