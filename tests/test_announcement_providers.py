@@ -8,6 +8,7 @@ from paper_trading_simulator.announcements import (
     ManualUploadAnnouncementProvider,
     MockAnnouncementProvider,
     ProviderStatus,
+    RSSNewsAnnouncementProvider,
     build_announcement_provider,
     parse_announcement_csv,
 )
@@ -118,6 +119,21 @@ class AnnouncementProviderTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.source_used, MockAnnouncementProvider.name)
         self.assertGreaterEqual(len(result.announcements), 1)
+
+    def test_rss_parser_extracts_common_company_symbol(self):
+        xml_text = (
+            "<rss><channel><item>"
+            "<title>Tata Motors shares rise after strong sales update</title>"
+            "<description>Auto stock in focus</description>"
+            "<link>https://example.com/news</link>"
+            "<pubDate>Mon, 08 Jun 2026 09:20:00 GMT</pubDate>"
+            "</item></channel></rss>"
+        )
+        from paper_trading_simulator.announcements import _parse_rss
+
+        parsed = _parse_rss(xml_text, "https://example.com/feed")
+
+        self.assertEqual(parsed[0].symbol, "TATAMOTORS")
 
 
 if __name__ == "__main__":
