@@ -18,7 +18,12 @@ from paper_trading_simulator.market_data import (
     YahooNSELiveQuoteMarketDataProvider,
 )
 from paper_trading_simulator.live_paper import LivePaperTrader
-from paper_trading_simulator.volume_scanner import VOLUME_SCANNER_UNIVERSE, scan_volume_setups, sector_leaders_from_quotes
+from paper_trading_simulator.volume_scanner import (
+    VOLUME_SCANNER_UNIVERSE,
+    scan_explosive_movers,
+    scan_volume_setups,
+    sector_leaders_from_quotes,
+)
 
 
 st.set_page_config(page_title="NSE AI Paper Trader", layout="wide")
@@ -498,20 +503,36 @@ if scanner_mode == "Opening Momentum":
         max_ltp=price_filter_max,
         top_n=volume_top_n,
     )
+    explosive_setups = scan_explosive_movers(
+        scanner_quotes,
+        min_ltp=price_filter_min,
+        max_ltp=price_filter_max,
+        top_n=volume_top_n,
+    )
+    combined_setups = []
+    seen_symbols = set()
+    for setup in explosive_setups + volume_setups:
+        if setup.symbol in seen_symbols:
+            continue
+        combined_setups.append(setup)
+        seen_symbols.add(setup.symbol)
+        if len(combined_setups) >= volume_top_n:
+            break
     sector_leader_rows = sector_leaders_from_quotes(
         scanner_quotes,
         min_ltp=price_filter_min,
         max_ltp=price_filter_max,
     )
-    auto_added_symbols = [setup.symbol for setup in volume_setups]
-    health_cols = st.columns(4)
+    auto_added_symbols = [setup.symbol for setup in combined_setups]
+    health_cols = st.columns(5)
     health_cols[0].metric("Scanner", "Opening Momentum")
     health_cols[1].metric("Universe Checked", len(raw_quotes))
-    health_cols[2].metric("Opening Watchlist", len(volume_setups))
-    health_cols[3].metric("Data Source", "Kite" if market_data_source.startswith("Kite") and raw_quotes and not kite_message.startswith("Kite snapshot failed") else "Yahoo")
+    health_cols[2].metric("Opening Watchlist", len(combined_setups))
+    health_cols[3].metric("Explosive Movers", len(explosive_setups))
+    health_cols[4].metric("Data Source", "Kite" if market_data_source.startswith("Kite") and raw_quotes and not kite_message.startswith("Kite snapshot failed") else "Yahoo")
     st.success("Opening Momentum active. Paper trades are restricted to 9:20-9:40 trigger-confirmed rows only.")
 
-    for setup in volume_setups:
+    for setup in combined_setups:
         watchlist_rows.append(
             {
                 "stock": setup.symbol,
@@ -708,12 +729,33 @@ if scanner_mode == "Opening Momentum":
     st.subheader("Opening Momentum Scanner")
     st.caption(
         "Ranks stocks using top volume, top price gainers, relative volume, sector confirmation, VWAP strength, "
-        "opening breakout, and distance from day high. NSE announcements are not used."
+        "opening breakout, distance from day high, and a special explosive-mover lane for small-cap breakouts. "
+        "NSE announcements are not used."
     )
     volume_cols = st.columns(3)
-    volume_cols[0].metric("Stocks scanned", len(VOLUME_SCANNER_UNIVERSE))
+    volume_cols[0].metric("Stocks scanned", len(raw_quotes))
     volume_cols[1].metric("Opening watchlist", len(auto_added_symbols))
     volume_cols[2].metric("Price filter", f"Rs. {price_filter_min}-{price_filter_max}")
+    st.markdown("#### Explosive Movers")
+    explosive_rows = [
+        {
+            "stock": setup.symbol,
+            "LTP": setup.ltp,
+            "change %": setup.change_pct,
+            "relative volume": setup.relative_volume,
+            "traded value lakh": setup.traded_value_lakh,
+            "day high": setup.day_high,
+            "trigger price": setup.trigger_price,
+            "stop loss": setup.stop_loss,
+            "target": setup.target,
+            "signal": setup.signal,
+            "AI decision": setup.ai_decision,
+            "confidence score": setup.confidence_score,
+            "reason": setup.reason,
+        }
+        for setup in explosive_setups
+    ]
+    st.dataframe(style_scores(pd.DataFrame(explosive_rows)), use_container_width=True)
     st.markdown("#### Sector Leaders")
     st.dataframe(pd.DataFrame(sector_leader_rows), use_container_width=True, hide_index=True)
 else:
