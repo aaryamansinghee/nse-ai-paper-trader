@@ -578,13 +578,25 @@ if scanner_mode == "Opening Momentum":
         max_ltp=price_filter_max,
         top_n=volume_top_n,
     )
-    explosive_setups = scan_explosive_movers(
-        scanner_quotes,
-        min_ltp=price_filter_min,
-        max_ltp=price_filter_max,
-        top_n=explosive_top_n,
-        min_change_pct=float(explosive_min_change),
-    )
+    try:
+        explosive_setups = scan_explosive_movers(
+            scanner_quotes,
+            min_ltp=price_filter_min,
+            max_ltp=price_filter_max,
+            top_n=explosive_top_n,
+            min_change_pct=float(explosive_min_change),
+        )
+    except TypeError:
+        explosive_setups = scan_explosive_movers(
+            scanner_quotes,
+            min_ltp=price_filter_min,
+            max_ltp=price_filter_max,
+            top_n=explosive_top_n,
+        )
+        explosive_setups = [
+            setup for setup in explosive_setups if (setup.change_pct or 0) >= float(explosive_min_change)
+        ]
+        st.warning("Using older scanner compatibility mode. Upload the latest paper_trading_simulator/volume_scanner.py.")
     combined_setups = []
     seen_symbols = set()
     for setup in explosive_setups + volume_setups:
