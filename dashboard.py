@@ -94,6 +94,14 @@ def explosive_diagnostic(symbol: str, quote: dict | None, min_ltp: float, max_lt
     }
 
 
+def setup_day_open(setup) -> float | None:
+    return getattr(setup, "day_open", None)
+
+
+def setup_move_from_open_pct(setup) -> float | None:
+    return getattr(setup, "move_from_open_pct", None)
+
+
 def ai_intraday_decision(score, candle, quote_source: str, is_auto_added: bool) -> tuple[str, str]:
     if not is_auto_added:
         return "REJECT", "Only NSE announcement stocks that pass the price filter can be auto-traded"
@@ -630,11 +638,11 @@ if scanner_mode == "Opening Momentum":
                 "stock": setup.symbol,
                 "sector": setup.sector,
                 "LTP": setup.ltp,
-                "open": setup.day_open,
+                "open": setup_day_open(setup),
                 "previous close": setup.previous_close,
                 "change": setup.change,
                 "change %": setup.change_pct,
-                "move from open %": setup.move_from_open_pct,
+                "move from open %": setup_move_from_open_pct(setup),
                 "day high": setup.day_high,
                 "day low": setup.day_low,
                 "volume": setup.volume,
@@ -656,10 +664,10 @@ if scanner_mode == "Opening Momentum":
                 "announcement eligible": "YES",
                 "AI decision": setup.ai_decision,
                 "LTP": setup.ltp,
-                "open": setup.day_open,
+                "open": setup_day_open(setup),
                 "previous close": setup.previous_close,
                 "change %": setup.change_pct,
-                "move from open %": setup.move_from_open_pct,
+                "move from open %": setup_move_from_open_pct(setup),
                 "relative volume": setup.relative_volume,
                 "trigger price": setup.trigger_price,
                 "stop loss": setup.stop_loss,
@@ -839,9 +847,9 @@ if scanner_mode == "Opening Momentum":
         {
             "stock": setup.symbol,
             "LTP": setup.ltp,
-            "open": setup.day_open,
+            "open": setup_day_open(setup),
             "change %": setup.change_pct,
-            "move from open %": setup.move_from_open_pct,
+            "move from open %": setup_move_from_open_pct(setup),
             "relative volume": setup.relative_volume,
             "traded value lakh": setup.traded_value_lakh,
             "day high": setup.day_high,
