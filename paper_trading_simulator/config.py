@@ -14,7 +14,7 @@ class TradingConfig:
     max_open_positions: int = 2
     force_square_off_time: time = time(15, 20)
     market_open_time: time = time(9, 15)
-    first_entry_time: time = time(9, 20)
+    first_entry_time: time = time(9, 16)
     last_entry_time: time = time(9, 40)
     opening_window_square_off_time: time = time(9, 45)
     market_close_time: time = time(15, 30)

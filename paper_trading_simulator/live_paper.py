@@ -119,10 +119,10 @@ class LivePaperTrader:
             self._log_rejection(state, symbol, f"Rejected: quote status is not live/updating ({quote_status})", now)
             return
         if now.time() < self.config.first_entry_time:
-            self._log_rejection(state, symbol, "Rejected: no fake entries before 9:20 AM IST", now)
+            self._log_rejection(state, symbol, "Rejected: no fake entries before 9:16 AM IST", now)
             return
         if now.time() > self.config.last_entry_time:
-            self._log_rejection(state, symbol, "Rejected: fresh opening-window entries allowed only from 9:15 AM to 9:40 AM IST", now)
+            self._log_rejection(state, symbol, "Rejected: fresh opening-window entries allowed only from 9:16 AM to 9:40 AM IST", now)
             return
         if ltp <= 0 or trigger <= 0 or stop_loss <= 0 or target <= 0:
             self._log_rejection(state, symbol, "Rejected: invalid price, trigger, stop loss, or target", now)

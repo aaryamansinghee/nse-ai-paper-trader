@@ -143,9 +143,11 @@ class OpeningMomentumSetup:
     symbol: str
     sector: str
     ltp: float
+    day_open: float
     previous_close: float | None
     change: float | None
     change_pct: float | None
+    move_from_open_pct: float
     day_high: float
     day_low: float
     volume: int
@@ -269,6 +271,7 @@ def _candidate_rows(quotes: dict[str, dict], min_ltp: float, max_ltp: float) -> 
         previous_close = candle.previous_close
         change = round(candle.close - previous_close, 2) if previous_close else None
         change_pct = round((change / previous_close) * 100, 2) if previous_close and change is not None else None
+        move_from_open_pct = round(((candle.close - candle.open) / candle.open) * 100, 2) if candle.open else 0
         expected_volume = _expected_opening_volume(symbol, candle.close)
         relative_volume = round(candle.volume / max(expected_volume, 1), 2)
         rows.append(
@@ -281,6 +284,7 @@ def _candidate_rows(quotes: dict[str, dict], min_ltp: float, max_ltp: float) -> 
                 "previous_close": previous_close,
                 "change": change,
                 "change_pct": change_pct,
+                "move_from_open_pct": move_from_open_pct,
                 "volume": int(candle.volume),
                 "expected_volume": expected_volume,
                 "relative_volume": relative_volume,
@@ -320,10 +324,10 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
     )
 
     strategy = _preferred_strategy(relative_volume_score, opening_breakout_score, vwap_score, explosive_boost)
-    trigger = _entry_trigger(candle, confidence)
+    trigger = _entry_trigger(candle, confidence, row)
     stop_loss = round(trigger * (1 - _stop_loss_pct(row, confidence)), 2)
     target = _target_price(trigger, row, confidence)
-    signal, ai_decision = _signal(confidence, candle.close, trigger)
+    signal, ai_decision = _signal(confidence, candle.close, trigger, row)
 
     reason = (
         f"{strategy}; RVOL {row['relative_volume']:.2f}x; "
@@ -331,6 +335,7 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
         f"opening breakout {opening_breakout_score}/16, sector {sector_score}/12, "
         f"VWAP strength {vwap_score}/12, day-high distance {day_high_distance_score}/10, "
         f"liquidity {liquidity_score}/10, explosive-mover boost {explosive_boost}. "
+        f"move from open {row['move_from_open_pct']:.2f}%; "
         f"Stop is {round((_stop_loss_pct(row, confidence) * 100), 2)}%; "
         f"momentum target is {round((_target_pct(row, confidence) * 100), 1)}%. "
         "Enter only after trigger confirmation."
@@ -339,9 +344,11 @@ def _score_candidate(row: dict, total_candidates: int, sector_scores: dict[str, 
         symbol=symbol,
         sector=sector,
         ltp=round(candle.close, 2),
+        day_open=round(candle.open, 2),
         previous_close=row["previous_close"],
         change=row["change"],
         change_pct=row["change_pct"],
+        move_from_open_pct=row["move_from_open_pct"],
         day_high=round(candle.high, 2),
         day_low=round(candle.low, 2),
         volume=int(candle.volume),
@@ -541,9 +548,9 @@ def _preferred_strategy(relative_volume_score: int, opening_breakout_score: int,
     return "WAIT: Needs stronger opening confirmation"
 
 
-def _entry_trigger(candle: Candle, confidence: int) -> float:
+def _entry_trigger(candle: Candle, confidence: int, row: dict) -> float:
     day_high_distance_pct = ((candle.high - candle.close) / candle.close) * 100 if candle.close else 100
-    if confidence >= 75 and day_high_distance_pct <= 0.15:
+    if confidence >= 75 and day_high_distance_pct <= 0.15 and row["move_from_open_pct"] <= 4:
         return round(candle.close, 2)
     buffer_pct = 0.001 if confidence >= 82 else 0.002
     breakout_level = max(candle.high * 1.0005, candle.close * (1 + buffer_pct))
@@ -578,7 +585,9 @@ def _target_pct(row: dict, confidence: int) -> float:
     return 0.025
 
 
-def _signal(confidence: int, ltp: float, trigger: float) -> tuple[str, str]:
+def _signal(confidence: int, ltp: float, trigger: float, row: dict) -> tuple[str, str]:
+    if row["move_from_open_pct"] > 4:
+        return "BUY WATCH", "WAIT_CHASE_TOO_LATE"
     if confidence >= 75 and ltp >= trigger:
         return "BUY WATCH", "TRADE_READY"
     if confidence >= 72:
