@@ -174,15 +174,15 @@ class VolumeScannerTests(unittest.TestCase):
 
         self.assertEqual(setups, [])
 
-    def test_near_day_high_strong_setup_can_be_trade_ready(self):
+    def test_near_day_high_early_setup_can_be_trade_ready(self):
         quotes = {
             "JAYBARMARU": {
                 "candle": Candle(
                     timestamp=datetime(2026, 6, 9, 9, 28),
                     symbol="JAYBARMARU",
-                    open=128.0,
+                    open=136.0,
                     high=140.76,
-                    low=127.5,
+                    low=135.5,
                     close=140.76,
                     volume=3887000,
                     previous_close=128.0,
@@ -197,6 +197,29 @@ class VolumeScannerTests(unittest.TestCase):
         self.assertEqual(setups[0].trigger_price, setups[0].ltp)
         self.assertEqual(setups[0].signal, "BUY WATCH")
         self.assertEqual(setups[0].ai_decision, "TRADE_READY")
+
+    def test_stretched_from_open_setup_is_not_chased(self):
+        quotes = {
+            "THOMASCOOK": {
+                "candle": Candle(
+                    timestamp=datetime(2026, 6, 9, 9, 35),
+                    symbol="THOMASCOOK",
+                    open=105.48,
+                    high=112.24,
+                    low=105.48,
+                    close=112.24,
+                    volume=2600000,
+                    previous_close=104.82,
+                ),
+                "source": "Kite",
+                "status": "Updating",
+            },
+        }
+
+        setups = scan_explosive_movers(quotes, min_ltp=100, max_ltp=1000, top_n=5)
+
+        self.assertEqual(setups[0].signal, "BUY WATCH")
+        self.assertEqual(setups[0].ai_decision, "WAIT_CHASE_TOO_LATE")
 
 
 if __name__ == "__main__":

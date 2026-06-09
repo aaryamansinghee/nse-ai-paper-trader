@@ -49,9 +49,29 @@ class LivePaperTraderTests(unittest.TestCase):
         self.assertEqual(len(state.positions), 1)
         self.assertEqual(state.trades_taken, 1)
 
-    def test_rejects_entry_before_920(self):
+    def test_position_size_uses_target_based_cap(self):
         state = self.trader.create_state()
-        early = datetime.combine(datetime.today(), time(9, 19))
+        five_percent_row = dict(self.row, **{"LTP": 100.0, "trigger price": 100.0, "stop loss": 99.5, "target": 105.0})
+        self.trader.process_setups(state, [five_percent_row], self.now)
+
+        position = state.positions["ABC"]
+
+        self.assertEqual(position.quantity, 250)
+        self.assertEqual(round(position.quantity * position.entry_price, 2), 25000.0)
+
+    def test_position_size_uses_larger_cap_for_ten_percent_target(self):
+        state = self.trader.create_state()
+        ten_percent_row = dict(self.row, **{"LTP": 100.0, "trigger price": 100.0, "stop loss": 99.75, "target": 110.0})
+        self.trader.process_setups(state, [ten_percent_row], self.now)
+
+        position = state.positions["ABC"]
+
+        self.assertEqual(position.quantity, 350)
+        self.assertEqual(round(position.quantity * position.entry_price, 2), 35000.0)
+
+    def test_rejects_entry_before_916(self):
+        state = self.trader.create_state()
+        early = datetime.combine(datetime.today(), time(9, 15))
         self.trader.process_setups(state, [self.row], early)
         self.assertEqual(len(state.positions), 0)
 
