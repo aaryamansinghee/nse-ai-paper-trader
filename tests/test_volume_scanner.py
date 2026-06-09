@@ -123,6 +123,7 @@ class VolumeScannerTests(unittest.TestCase):
         self.assertIn("Explosive Mover", setups[0].strategy)
         self.assertGreaterEqual(setups[0].relative_volume, 1.2)
         self.assertGreaterEqual(setups[0].target, round(setups[0].trigger_price * 1.10, 2))
+        self.assertEqual(setups[0].stop_loss, round(setups[0].trigger_price * 0.9975, 2))
 
     def test_explosive_mover_lane_captures_early_two_percent_move(self):
         quotes = {
@@ -148,6 +149,7 @@ class VolumeScannerTests(unittest.TestCase):
         self.assertGreaterEqual(setups[0].change_pct, 2)
         self.assertGreaterEqual(setups[0].confidence_score, 58)
         self.assertGreaterEqual(setups[0].target, round(setups[0].trigger_price * 1.05, 2))
+        self.assertEqual(setups[0].stop_loss, round(setups[0].trigger_price * 0.995, 2))
         self.assertIn(setups[0].ai_decision, {"WAIT", "WAIT_FOR_TRIGGER", "TRADE_READY"})
 
     def test_explosive_mover_default_filters_out_small_two_percent_moves(self):
@@ -171,6 +173,30 @@ class VolumeScannerTests(unittest.TestCase):
         setups = scan_explosive_movers(quotes, min_ltp=100, max_ltp=1000, top_n=5)
 
         self.assertEqual(setups, [])
+
+    def test_near_day_high_strong_setup_can_be_trade_ready(self):
+        quotes = {
+            "JAYBARMARU": {
+                "candle": Candle(
+                    timestamp=datetime(2026, 6, 9, 9, 28),
+                    symbol="JAYBARMARU",
+                    open=128.0,
+                    high=140.76,
+                    low=127.5,
+                    close=140.76,
+                    volume=3887000,
+                    previous_close=128.0,
+                ),
+                "source": "Kite",
+                "status": "Updating",
+            },
+        }
+
+        setups = scan_explosive_movers(quotes, min_ltp=100, max_ltp=1000, top_n=5)
+
+        self.assertEqual(setups[0].trigger_price, setups[0].ltp)
+        self.assertEqual(setups[0].signal, "BUY WATCH")
+        self.assertEqual(setups[0].ai_decision, "TRADE_READY")
 
 
 if __name__ == "__main__":
