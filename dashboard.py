@@ -248,7 +248,7 @@ def signal_color(value: str) -> str:
 def decision_color(value: str) -> str:
     if value == "TRADE_READY":
         return "color: #047857; font-weight: 800; background-color: #dcfce7"
-    if value == "WAIT_FOR_TRIGGER":
+    if value in {"WAIT_FOR_TRIGGER", "WAIT_CHASE_TOO_LATE"}:
         return "color: #1d4ed8; font-weight: 800; background-color: #dbeafe"
     if value == "WAIT":
         return "color: #92400e; font-weight: 700; background-color: #fef3c7"
@@ -275,9 +275,11 @@ def style_watchlist(frame: pd.DataFrame):
         .format(
             {
                 "LTP": format_money,
+                "open": format_money,
                 "previous close": format_money,
                 "change": format_plain_number,
                 "change %": lambda value: "" if pd.isna(value) else f"{float(value):.2f}%",
+                "move from open %": lambda value: "" if pd.isna(value) else f"{float(value):.2f}%",
                 "day high": format_money,
                 "day low": format_money,
                 "volume": lambda value: "" if pd.isna(value) else f"{int(value):,}",
@@ -313,8 +315,10 @@ def style_scores(frame: pd.DataFrame):
         .format(
             {
                 "LTP": format_money,
+                "open": format_money,
                 "previous close": format_money,
                 "change %": lambda value: "" if pd.isna(value) else f"{float(value):.2f}%",
+                "move from open %": lambda value: "" if pd.isna(value) else f"{float(value):.2f}%",
                 "trigger price": format_money,
                 "stop loss": format_money,
                 "target": format_money,
@@ -618,7 +622,7 @@ if scanner_mode == "Opening Momentum":
     health_cols[2].metric("Opening Watchlist", len(combined_setups))
     health_cols[3].metric("Explosive Movers", len(explosive_setups))
     health_cols[4].metric("Data Source", "Kite" if market_data_source.startswith("Kite") and raw_quotes and not kite_message.startswith("Kite snapshot failed") else "Yahoo")
-    st.success("Opening Momentum active. Paper trades are restricted to 9:20-9:40 trigger-confirmed rows only.")
+    st.success("Opening Momentum active. Paper trades are restricted to 9:16-9:40 trigger-confirmed rows only.")
 
     for setup in combined_setups:
         watchlist_rows.append(
@@ -626,9 +630,11 @@ if scanner_mode == "Opening Momentum":
                 "stock": setup.symbol,
                 "sector": setup.sector,
                 "LTP": setup.ltp,
+                "open": setup.day_open,
                 "previous close": setup.previous_close,
                 "change": setup.change,
                 "change %": setup.change_pct,
+                "move from open %": setup.move_from_open_pct,
                 "day high": setup.day_high,
                 "day low": setup.day_low,
                 "volume": setup.volume,
@@ -650,8 +656,10 @@ if scanner_mode == "Opening Momentum":
                 "announcement eligible": "YES",
                 "AI decision": setup.ai_decision,
                 "LTP": setup.ltp,
+                "open": setup.day_open,
                 "previous close": setup.previous_close,
                 "change %": setup.change_pct,
+                "move from open %": setup.move_from_open_pct,
                 "relative volume": setup.relative_volume,
                 "trigger price": setup.trigger_price,
                 "stop loss": setup.stop_loss,
@@ -831,7 +839,9 @@ if scanner_mode == "Opening Momentum":
         {
             "stock": setup.symbol,
             "LTP": setup.ltp,
+            "open": setup.day_open,
             "change %": setup.change_pct,
+            "move from open %": setup.move_from_open_pct,
             "relative volume": setup.relative_volume,
             "traded value lakh": setup.traded_value_lakh,
             "day high": setup.day_high,
@@ -881,7 +891,7 @@ st.dataframe(style_watchlist(watchlist_df), use_container_width=True)
 st.subheader("AI Strategy Scoring")
 if scanner_mode == "Opening Momentum":
     st.caption(
-        "Auto paper-trading is restricted to TRADE_READY rows only. No entries before 9:20 AM, no fresh entries after 9:40 AM, "
+        "Auto paper-trading is restricted to TRADE_READY rows only. No entries before 9:16 AM, no fresh entries after 9:40 AM, "
         "and every open paper position exits by 9:45 AM."
     )
 else:
@@ -905,7 +915,7 @@ paper_cols[2].metric("Realized P&L", f"Rs. {live_state.realized_pnl():,.2f}")
 paper_cols[3].metric("Unrealized P&L", f"Rs. {live_state.unrealized_pnl():,.2f}")
 paper_cols[4].metric("Trades used", f"{live_state.trades_taken}/3")
 st.caption(
-    f"Status: {status_text}. Opening Momentum fake entries: 9:20 AM to 9:40 AM IST only. "
+    f"Status: {status_text}. Opening Momentum fake entries: 9:16 AM to 9:40 AM IST only. "
     "Any open fake position is exited at 9:45 AM IST. "
     "Backup force square-off: 3:20 PM IST. Daily target: Rs. 2,500. Max daily loss: Rs. 1,000."
 )
