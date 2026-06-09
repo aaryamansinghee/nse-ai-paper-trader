@@ -542,6 +542,9 @@ def _preferred_strategy(relative_volume_score: int, opening_breakout_score: int,
 
 
 def _entry_trigger(candle: Candle, confidence: int) -> float:
+    day_high_distance_pct = ((candle.high - candle.close) / candle.close) * 100 if candle.close else 100
+    if confidence >= 75 and day_high_distance_pct <= 0.15:
+        return round(candle.close, 2)
     buffer_pct = 0.001 if confidence >= 82 else 0.002
     breakout_level = max(candle.high * 1.0005, candle.close * (1 + buffer_pct))
     return round(min(breakout_level, candle.close * 1.004), 2)
@@ -576,7 +579,7 @@ def _target_pct(row: dict, confidence: int) -> float:
 
 
 def _signal(confidence: int, ltp: float, trigger: float) -> tuple[str, str]:
-    if confidence >= 78 and ltp >= trigger:
+    if confidence >= 75 and ltp >= trigger:
         return "BUY WATCH", "TRADE_READY"
     if confidence >= 72:
         return "BUY WATCH", "WAIT_FOR_TRIGGER"
