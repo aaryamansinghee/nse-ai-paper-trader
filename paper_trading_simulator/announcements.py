@@ -690,8 +690,8 @@ def _dedupe_announcements(announcements: Sequence[CorporateAnnouncement]) -> lis
 
 
 def _within_days(announcements: Sequence[CorporateAnnouncement], days: int) -> list[CorporateAnnouncement]:
-    cutoff = datetime.now() - timedelta(days=days)
-    return [item for item in announcements if item.published_at >= cutoff]
+    cutoff_day = (datetime.now() - timedelta(days=max(days, 0) + 1)).date()
+    return [item for item in announcements if item.published_at.date() >= cutoff_day]
 
 
 def _first_value(row: dict[str, str], *names: str) -> str:

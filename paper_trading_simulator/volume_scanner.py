@@ -564,9 +564,9 @@ def _target_price(trigger: float, row: dict, confidence: int) -> float:
 def _stop_loss_pct(row: dict, confidence: int) -> float:
     explosive_boost = row.get("explosive_boost", 0)
     if explosive_boost >= 18:
-        return 0.0025
+        return 0.0075
     if explosive_boost >= 12 and confidence >= 75:
-        return 0.0025
+        return 0.006
     return 0.005
 
 

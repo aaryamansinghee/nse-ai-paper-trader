@@ -15,6 +15,7 @@ class LivePaperPosition:
     entry_time: datetime
     reason: str
     confidence_score: int
+    highest_price: float = 0.0
 
     @property
     def unrealized_pnl(self) -> float:
@@ -106,8 +107,16 @@ class LivePaperTrader:
         sentiment = row.get("sentiment", "")
         announcement_eligible = row.get("announcement eligible") == "YES"
         ai_decision = row.get("AI decision", "")
+        scanner_lane = row.get("scanner lane", "")
 
+        protection_reason = self._capital_protection_entry_stop(state)
+        if protection_reason:
+            self._log_rejection(state, symbol, protection_reason, now)
+            return
         if not announcement_eligible:
+            return
+        if scanner_lane != "EXPLOSIVE":
+            self._log_rejection(state, symbol, "Rejected: fake trading is restricted to Explosive Movers only", now)
             return
         if sentiment != "positive":
             return
@@ -167,6 +176,7 @@ class LivePaperTrader:
             entry_time=now,
             reason=row.get("reason for trade", ""),
             confidence_score=confidence,
+            highest_price=ltp,
         )
         state.trades_taken += 1
         self._log_event(
@@ -201,14 +211,34 @@ class LivePaperTrader:
         for symbol, position in state.positions.items():
             if symbol in prices:
                 position.latest_price = prices[symbol]
+                previous_high = getattr(position, "highest_price", 0.0) or position.entry_price
+                position.highest_price = max(previous_high, position.latest_price)
 
     def _check_exits(self, state: LivePaperState, prices: dict[str, float], now: datetime) -> None:
         for symbol, position in list(state.positions.items()):
             price = prices.get(symbol, position.latest_price)
-            if price <= position.stop_loss:
+            active_stop, stop_reason = self._active_stop(position)
+            if price <= active_stop:
+                position.stop_loss = active_stop
+                self._close_position(state, symbol, price, now, stop_reason)
+            elif price <= position.stop_loss:
                 self._close_position(state, symbol, price, now, "STOP_LOSS")
             elif price >= position.target:
                 self._close_position(state, symbol, price, now, "TARGET_HIT")
+
+    @staticmethod
+    def _active_stop(position: LivePaperPosition) -> tuple[float, str]:
+        highest = max(getattr(position, "highest_price", 0.0) or position.entry_price, position.latest_price)
+        gain_pct = (highest - position.entry_price) / position.entry_price if position.entry_price else 0
+        active_stop = position.stop_loss
+        reason = "STOP_LOSS"
+        if gain_pct >= 0.03:
+            active_stop = max(active_stop, highest * 0.985, position.entry_price * 1.006)
+            reason = "TRAILING_PROFIT_STOP"
+        elif gain_pct >= 0.015:
+            active_stop = max(active_stop, position.entry_price * 1.001)
+            reason = "BREAKEVEN_PROTECTION_STOP"
+        return round(active_stop, 2), reason
 
     def _square_off_all(self, state: LivePaperState, prices: dict[str, float], now: datetime, reason: str) -> None:
         for symbol in list(state.positions):
@@ -239,8 +269,22 @@ class LivePaperTrader:
             return f"Daily fake profit target reached: Rs. {pnl:.2f}"
         if pnl <= -self.config.max_daily_loss:
             return f"Max daily fake loss reached: Rs. {pnl:.2f}"
-        if state.trades_taken >= self.config.max_trades_per_day:
-            return "Max 3 paper trades reached"
+        return None
+
+    def _capital_protection_entry_stop(self, state: LivePaperState) -> str | None:
+        realized = state.realized_pnl()
+        if self.config.lock_after_first_profitable_trade and any(trade.pnl > 0 for trade in state.closed_trades):
+            return "Rejected: profitable trade already booked; locking the green paper day"
+        if realized <= -self.config.morning_capital_protection_loss:
+            return f"Rejected: morning protection active after Rs. {realized:.2f} realized P&L"
+        recent_losses = 0
+        for trade in reversed(state.closed_trades):
+            if trade.pnl < 0:
+                recent_losses += 1
+            else:
+                break
+        if recent_losses >= self.config.stop_after_consecutive_losses:
+            return f"Rejected: {recent_losses} consecutive losing paper trades; stopping fresh entries"
         return None
 
     def _inside_market_hours(self, current_time: time) -> bool:

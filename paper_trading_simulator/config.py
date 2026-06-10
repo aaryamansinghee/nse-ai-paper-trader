@@ -8,10 +8,13 @@ class TradingConfig:
     daily_profit_target: float = 2500.0
     max_daily_loss: float = 1000.0
     min_stop_loss_pct: float = 0.0025
-    max_stop_loss_pct: float = 0.005
+    max_stop_loss_pct: float = 0.008
     max_loss_per_trade: float = 400.0
     max_trades_per_day: int = 3
     max_open_positions: int = 2
+    morning_capital_protection_loss: float = 250.0
+    stop_after_consecutive_losses: int = 2
+    lock_after_first_profitable_trade: bool = True
     force_square_off_time: time = time(15, 20)
     market_open_time: time = time(9, 15)
     first_entry_time: time = time(9, 16)
