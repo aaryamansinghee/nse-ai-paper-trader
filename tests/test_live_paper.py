@@ -22,6 +22,7 @@ class LivePaperTraderTests(unittest.TestCase):
             "sentiment": "positive",
             "AI decision": "TRADE_READY",
             "announcement eligible": "YES",
+            "scanner lane": "EXPLOSIVE",
         }
 
     def test_rejects_ineligible_announcement_row(self):
@@ -48,6 +49,12 @@ class LivePaperTraderTests(unittest.TestCase):
         self.trader.process_setups(state, [self.row], self.now)
         self.assertEqual(len(state.positions), 1)
         self.assertEqual(state.trades_taken, 1)
+
+    def test_rejects_non_explosive_rows(self):
+        state = self.trader.create_state()
+        row = dict(self.row, **{"scanner lane": "OPENING_MOMENTUM"})
+        self.trader.process_setups(state, [row], self.now)
+        self.assertEqual(len(state.positions), 0)
 
     def test_position_size_uses_target_based_cap(self):
         state = self.trader.create_state()
@@ -92,6 +99,52 @@ class LivePaperTraderTests(unittest.TestCase):
         self.assertEqual(len(state.positions), 0)
         self.assertEqual(len(state.closed_trades), 1)
         self.assertEqual(state.closed_trades[0].exit_reason, "OPENING_WINDOW_EXIT_9_45_AM")
+
+    def test_max_trades_reached_does_not_square_off_open_position(self):
+        state = self.trader.create_state()
+        state.trades_taken = self.trader.config.max_trades_per_day
+        state.positions["ABC"] = self.trader.process_setups(self.trader.create_state(), [self.row], self.now).positions["ABC"]
+        later_row = dict(self.row, **{"LTP": 253.0})
+
+        self.trader.process_setups(state, [later_row], self.now)
+
+        self.assertEqual(len(state.positions), 1)
+        self.assertEqual(len(state.closed_trades), 0)
+
+    def test_profitable_trade_locks_new_entries(self):
+        state = self.trader.create_state()
+        self.trader.process_setups(state, [self.row], self.now)
+        self.trader.process_setups(state, [dict(self.row, **{"LTP": 270.0})], self.now)
+        next_row = dict(self.row, **{"stock": "XYZ"})
+
+        self.trader.process_setups(state, [next_row], self.now)
+
+        self.assertEqual(len(state.closed_trades), 1)
+        self.assertEqual(len(state.positions), 0)
+
+    def test_two_consecutive_losses_stop_new_entries(self):
+        state = self.trader.create_state()
+        first_loss = dict(self.row, **{"stock": "AAA"})
+        second_loss = dict(self.row, **{"stock": "BBB"})
+        third_trade = dict(self.row, **{"stock": "CCC"})
+
+        self.trader.process_setups(state, [first_loss], self.now)
+        self.trader.process_setups(state, [dict(first_loss, **{"LTP": 250.0})], self.now)
+        self.trader.process_setups(state, [second_loss], self.now)
+        self.trader.process_setups(state, [dict(second_loss, **{"LTP": 250.0})], self.now)
+        self.trader.process_setups(state, [third_trade], self.now)
+
+        self.assertEqual(len(state.closed_trades), 2)
+        self.assertEqual(len(state.positions), 0)
+
+    def test_profit_move_activates_breakeven_protection(self):
+        state = self.trader.create_state()
+        self.trader.process_setups(state, [self.row], self.now)
+        self.trader.process_setups(state, [dict(self.row, **{"LTP": 256.0})], self.now)
+        self.trader.process_setups(state, [dict(self.row, **{"LTP": 252.1})], self.now)
+
+        self.assertEqual(len(state.positions), 0)
+        self.assertEqual(state.closed_trades[0].exit_reason, "BREAKEVEN_PROTECTION_STOP")
 
 
 if __name__ == "__main__":

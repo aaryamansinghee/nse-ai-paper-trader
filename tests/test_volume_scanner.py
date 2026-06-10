@@ -123,7 +123,7 @@ class VolumeScannerTests(unittest.TestCase):
         self.assertIn("Explosive Mover", setups[0].strategy)
         self.assertGreaterEqual(setups[0].relative_volume, 1.2)
         self.assertGreaterEqual(setups[0].target, round(setups[0].trigger_price * 1.10, 2))
-        self.assertEqual(setups[0].stop_loss, round(setups[0].trigger_price * 0.9975, 2))
+        self.assertEqual(setups[0].stop_loss, round(setups[0].trigger_price * 0.9925, 2))
 
     def test_explosive_mover_lane_captures_early_two_percent_move(self):
         quotes = {
